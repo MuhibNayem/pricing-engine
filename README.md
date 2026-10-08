@@ -265,10 +265,11 @@ JAVA_HOME=/home/amnayem/.sdkman/candidates/java/25.0.2-open PATH=$JAVA_HOME/bin:
 ## 📚 Deep Dive Documentation
 
 For detailed architectural diagrams, operational runbooks, and sales whitepapers:
-* 📘 [Developer Runbook](file:///home/amnayem/.gemini/antigravity/brain/bc531363-dd37-4c7d-bba4-fd301d3154b9/DEVELOPER_RUNBOOK.md)
-* 📐 [System Architecture Specification](file:///home/amnayem/.gemini/antigravity/brain/bc531363-dd37-4c7d-bba4-fd301d3154b9/SYSTEM_ARCHITECTURE_SPECIFICATION.md)
-* 💼 [Executive Business Sales Whitepaper](file:///home/amnayem/.gemini/antigravity/brain/bc531363-dd37-4c7d-bba4-fd301d3154b9/BUSINESS_SALES_WHITEPAPER.md)
-* 🌍 [Real-World Industry Use Cases](file:///home/amnayem/.gemini/antigravity/brain/bc531363-dd37-4c7d-bba4-fd301d3154b9/real-world-industry-use-cases.md)
+* 📘 [Developer Runbook](docs/DEVELOPER_RUNBOOK.md)
+* 📐 [System Architecture Specification](docs/SYSTEM_ARCHITECTURE_SPECIFICATION.md)
+* 💼 [Executive Business Sales Whitepaper](docs/BUSINESS_SALES_WHITEPAPER.md)
+* 🌍 [Real-World Industry Use Cases](docs/REAL_WORLD_INDUSTRY_USE_CASES.md)
+* ⚖️ [Enterprise Readiness Evaluation](docs/ENTERPRISE_READINESS_EVALUATION.md)
 
 ---
 
