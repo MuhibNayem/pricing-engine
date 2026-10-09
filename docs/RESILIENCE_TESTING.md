@@ -135,12 +135,49 @@ cap=5,000 per store
 - A hot key hammered by 8 threads × 500 attempts is classified exactly once per attempt —
   `CLAIMED`/`DUPLICATE`/`CONFLICT` — with no attempt falling into two buckets or none.
 
-**The finding worth acting on: reclamation is lazy, and the sweep lands on one request.** There is
-no scheduler, so nothing runs while a store sits idle. The *next* read sweeps every expired entry
-in a single pass. At the default cap of 100,000 entries that is a pause on one unlucky request, not
-a rounding error. A background sweeper would fix it and is deliberately not added here — it would
-mean this store starting threads it does not own. If your deployment has bursty traffic followed by
-long idle periods, size `DEFAULT_MAX_ENTRIES` for that first request rather than for steady state.
+### Finding: every operation pays an O(n) sweep, under a global lock
+
+This is worse than "memory is reclaimed lazily", and the first version of this document said so too
+mildly. Measured on this machine — mean cost of one `claim()` and one `isDuplicate()` against a
+store pre-loaded to the given size:
+
+```
+preloaded     claim()      isDuplicate()
+    100          5.0 us          1.7 us
+  1,000          4.5 us          4.3 us
+ 10,000         47.5 us         51.0 us
+ 50,000        234.5 us        226.7 us
+100,000        434.2 us        436.6 us
+```
+
+Linear in the number of live entries, and it happens on **every** call:
+
+- `InMemoryIdempotencyStore.purgeExpired` runs inside `synchronized (seenKeys)` on `claim()` and
+  `isDuplicate()`.
+- `InMemoryRatingClaimStore.purgeExpired` runs on `find()`, `record()`, `compareAndSet()` and
+  `remove()` — every method on the interface.
+
+So the entry cap does not merely bound memory. It converts the problem into a throughput cliff: at
+the default `DEFAULT_MAX_ENTRIES` of 100,000, a single `claim()` costs ~434 us while holding a
+monitor that serialises every other ingestion thread in the process. The theoretical ceiling is
+roughly **2,300 claims per second, globally**, falling linearly from there. The HTTP load profile
+above reported 3,789 req/s against a nearly empty store; ingestion becomes the bottleneck well
+before the cap, and degrades rather than plateauing.
+
+Why it is not fixed here: three fixes are possible and all three are decisions, not obvious
+repairs.
+
+1. **Amortise the sweep** — purge at most every K operations, or bound the scan to a slice per
+   call. Cheap, stays in-process, and caps latency at O(n/K) rather than O(n).
+2. **Bucket by time** — index entries into per-hour buckets so expiry is O(1) to test and a whole
+   bucket drops at once. Best asymptotics, most code.
+3. **Background sweeper** — a scheduled thread. The obvious answer, and the one the library must
+   not take: it would mean the store starting threads it does not own, which is the same boundary
+   that keeps auth, scheduling and transport host-side.
+
+Option 1 or 2 is the recommendation; both keep the store passive. Until then, size
+`DEFAULT_MAX_ENTRIES` for the per-operation cost rather than for memory — the current default of
+100,000 costs ~434 us per claim.
 
 ## What this does NOT prove
 
