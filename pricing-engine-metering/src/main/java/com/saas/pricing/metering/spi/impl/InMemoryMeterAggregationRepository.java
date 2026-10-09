@@ -1,5 +1,7 @@
 package com.saas.pricing.metering.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.metering.model.MeterAggregation;
@@ -15,7 +17,7 @@ import java.util.concurrent.ConcurrentMap;
 /**
  * Thread-safe in-memory cache/repository of calculated MeterAggregations.
  */
-public class InMemoryMeterAggregationRepository implements MeterAggregationRepository {
+public class InMemoryMeterAggregationRepository implements MeterAggregationRepository, ResettableForTesting {
 
     private final ConcurrentMap<String, MeterAggregation> aggregations = new ConcurrentHashMap<>();
 
@@ -86,7 +88,8 @@ public class InMemoryMeterAggregationRepository implements MeterAggregationRepos
             .toList();
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         aggregations.clear();
     }
 }

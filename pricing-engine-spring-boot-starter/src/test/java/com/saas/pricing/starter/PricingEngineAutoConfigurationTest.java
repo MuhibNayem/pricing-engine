@@ -2,6 +2,10 @@ package com.saas.pricing.starter;
 
 import com.saas.pricing.core.engine.PricingEngine;
 import com.saas.pricing.core.spi.RateCardRepository;
+import com.saas.pricing.core.spi.FxRateCache;
+import com.saas.pricing.core.spi.impl.ConcurrentMapFxRateCache;
+import com.saas.pricing.core.spi.CurrencyExchangeProvider;
+import com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -89,74 +93,39 @@ class PricingEngineAutoConfigurationTest {
         assertThat(com.saas.pricing.starter.context.ScopedPricingContext.currentTenant()).isEmpty();
     }
 
+
+
+
+
+
+
+
+
+
+
+
+
     @Test
-    @DisplayName("Should omit cacheProvider and not wrap currencyExchangeProvider when enable-caching is false")
-    void testEnableCachingFalse() {
+    @DisplayName("Should use host-provided FxRateCache bean when available")
+    void testCustomFxRateCacheAccepted() {
+        contextRunner
+            .withBean("customFxCache", FxRateCache.class, ConcurrentMapFxRateCache::new)
+            .run(context -> {
+                assertThat(context).hasSingleBean(FxRateCache.class);
+                var provider = context.getBean(CurrencyExchangeProvider.class);
+                assertThat(provider).isInstanceOf(CachedCurrencyExchangeProvider.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should not wrap currencyExchangeProvider when caching is disabled")
+    void testFxCachingDisabled() {
         contextRunner
             .withPropertyValues("pricing.engine.enable-caching=false")
             .run(context -> {
-                assertThat(context).doesNotHaveBean(com.saas.pricing.core.spi.CacheProvider.class);
-                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
-                assertThat(provider).isNotInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
-            });
-    }
-
-    @Test
-    @DisplayName("Should wrap currencyExchangeProvider with default CacheProvider when enable-caching is true")
-    void testEnableCachingDefault() {
-        contextRunner.run(context -> {
-            assertThat(context).hasSingleBean(com.saas.pricing.core.spi.CacheProvider.class);
-            var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
-            assertThat(provider).isInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
-        });
-    }
-
-    @Test
-    @DisplayName("Should safely ignore differently-keyed CacheProvider without deferred failure")
-    void testDifferentlyKeyedCacheProviderIgnored() {
-        contextRunner
-            .withBean("customCache", com.saas.pricing.core.spi.CacheProvider.class,
-                () -> new com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider<Long, String>())
-            .run(context -> {
-                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
-                assertThat(provider).isNotInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
-            });
-    }
-
-    @Test
-    @DisplayName("Should safely ignore differently-keyed CacheProvider even when named cacheProvider")
-    void testDifferentlyKeyedCacheProviderNamedCacheProviderIgnored() {
-        contextRunner
-            .withBean("cacheProvider", com.saas.pricing.core.spi.CacheProvider.class,
-                () -> new com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider<Long, String>())
-            .run(context -> {
-                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
-                assertThat(provider).isNotInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
-            });
-    }
-
-    static class CustomFxCacheProvider extends com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider<String, java.math.BigDecimal> {}
-    static class CustomIncompatibleCacheProvider extends com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider<Long, String> {}
-
-    @Test
-    @DisplayName("Should wrap currencyExchangeProvider when host provides custom CacheProvider<String, BigDecimal>")
-    void testCustomCompatibleCacheProviderAccepted() {
-        contextRunner
-            .withBean("customFxCache", CustomFxCacheProvider.class, CustomFxCacheProvider::new)
-            .run(context -> {
-                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
-                assertThat(provider).isInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
-            });
-    }
-
-    @Test
-    @DisplayName("Should safely ignore custom class CacheProvider with incompatible generics")
-    void testCustomIncompatibleClassCacheProviderIgnored() {
-        contextRunner
-            .withBean("customIncompatibleCache", CustomIncompatibleCacheProvider.class, CustomIncompatibleCacheProvider::new)
-            .run(context -> {
-                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
-                assertThat(provider).isNotInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
+                assertThat(context).doesNotHaveBean(FxRateCache.class);
+                var provider = context.getBean(CurrencyExchangeProvider.class);
+                assertThat(provider).isNotInstanceOf(CachedCurrencyExchangeProvider.class);
             });
     }
 

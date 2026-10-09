@@ -2,6 +2,7 @@ package com.saas.pricing.core.spi.impl;
 
 import com.saas.pricing.core.model.PricingResult;
 import com.saas.pricing.core.spi.AuditSink;
+import com.saas.pricing.core.spi.ResettableForTesting;
 
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
@@ -18,7 +19,7 @@ import java.util.concurrent.TimeUnit;
  * no ceiling turns an audit-store stall into an unbounded virtual-thread and heap leak, and the
  * failures were previously reported only to stderr.
  */
-public class VirtualThreadAuditSink implements AuditSink, AutoCloseable {
+public class VirtualThreadAuditSink implements AuditSink, AutoCloseable, ResettableForTesting {
 
     private static final System.Logger LOG = System.getLogger(VirtualThreadAuditSink.class.getName());
     static final int MAX_IN_FLIGHT = 10_000;
@@ -70,9 +71,10 @@ public class VirtualThreadAuditSink implements AuditSink, AutoCloseable {
         }
     }
 
-    public void clear() {
-        if (delegate instanceof InMemoryAuditSink inMem) {
-            inMem.clear();
+    @Override
+    public void resetForTesting() {
+        if (delegate instanceof ResettableForTesting resettable) {
+            resettable.resetForTesting();
         }
     }
 }

@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.PlanCode;
 import com.saas.pricing.core.model.TenantId;
@@ -18,7 +20,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * Thread-safe in-memory repository for negotiated contract overrides.
  */
-public class InMemoryContractOverrideRepository implements ContractOverrideRepository {
+public class InMemoryContractOverrideRepository implements ContractOverrideRepository, ResettableForTesting {
 
     private final Map<String, List<ContractOverride>> store = new ConcurrentHashMap<>();
 
@@ -68,7 +70,8 @@ public class InMemoryContractOverrideRepository implements ContractOverrideRepos
         store.computeIfAbsent(k, key -> new CopyOnWriteArrayList<>()).add(override);
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         store.clear();
     }
 }

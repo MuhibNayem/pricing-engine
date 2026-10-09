@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.spi.CurrencyExchangeProvider;
 
@@ -14,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Enterprise in-memory FX currency exchange provider.
  * Supports direct rate pairs, inverse rate calculation, and triangulation via bridge currencies (e.g. USD).
  */
-public class InMemoryCurrencyExchangeProvider implements CurrencyExchangeProvider {
+public class InMemoryCurrencyExchangeProvider implements CurrencyExchangeProvider, ResettableForTesting {
 
     private static final CurrencyUnit BRIDGE_CURRENCY = CurrencyUnit.USD;
     private final Map<String, BigDecimal> directRates = new ConcurrentHashMap<>();
@@ -83,7 +85,8 @@ public class InMemoryCurrencyExchangeProvider implements CurrencyExchangeProvide
         return null;
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         directRates.clear();
     }
 }

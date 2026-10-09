@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.idempotency.IdempotencyDecision;
 import com.saas.pricing.core.model.idempotency.IdempotencyRecord;
@@ -21,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * a {@code replace} followed by {@code putIfAbsent} is not, and lets two racers both believe they
  * reclaimed a stale entry.
  */
-public class InMemoryIdempotencyKeyStore implements IdempotencyKeyStore {
+public class InMemoryIdempotencyKeyStore implements IdempotencyKeyStore, ResettableForTesting {
 
     /** Tenant-scoped identity of a key. */
     private record Scope(TenantId tenantId, String key) {
@@ -91,7 +93,8 @@ public class InMemoryIdempotencyKeyStore implements IdempotencyKeyStore {
             existing.recordedAt().isAfter(claim.recordedAt()) ? existing : null);
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         records.clear();
     }
 }

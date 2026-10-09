@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.PricingResult;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.spi.AuditSink;
@@ -15,7 +17,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * Thread-safe queryable in-memory audit sink for testing, auditing, and ledger verification.
  */
-public class InMemoryAuditSink implements AuditSink {
+public class InMemoryAuditSink implements AuditSink, ResettableForTesting {
 
     private final Map<String, PricingResult> resultsById = new ConcurrentHashMap<>();
     private final Map<String, List<PricingResult>> resultsByTenant = new ConcurrentHashMap<>();
@@ -44,7 +46,8 @@ public class InMemoryAuditSink implements AuditSink {
         return resultsById.size();
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         resultsById.clear();
         resultsByTenant.clear();
     }

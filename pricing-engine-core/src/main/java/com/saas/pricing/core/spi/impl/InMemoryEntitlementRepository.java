@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.entitlement.CustomerEntitlement;
@@ -16,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Thread-safe in-memory customer entitlement repository.
  */
-public class InMemoryEntitlementRepository implements EntitlementRepository {
+public class InMemoryEntitlementRepository implements EntitlementRepository, ResettableForTesting {
 
     private final Map<String, CustomerEntitlement> store = new ConcurrentHashMap<>();
 
@@ -73,7 +75,8 @@ public class InMemoryEntitlementRepository implements EntitlementRepository {
         store.computeIfPresent(k, (key, existing) -> existing.recordUsage(usageDelta));
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         store.clear();
     }
 }

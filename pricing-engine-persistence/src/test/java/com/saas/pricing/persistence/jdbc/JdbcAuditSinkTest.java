@@ -76,7 +76,7 @@ class JdbcAuditSinkTest extends BaseJdbcRepositoryTest {
 
         auditSink.record(result);
 
-        Optional<PricingResult> retrieved = auditSink.findAuditRecord("calc_audit_1");
+        Optional<PricingResult> retrieved = auditSink.findAuditRecord(tenantId, "calc_audit_1");
         assertThat(retrieved).isPresent();
 
         PricingResult r = retrieved.get();

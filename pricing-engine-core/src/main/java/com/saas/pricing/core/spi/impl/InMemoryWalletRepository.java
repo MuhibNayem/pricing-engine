@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.wallet.DrawdownTransaction;
@@ -22,7 +24,7 @@ import java.util.function.UnaryOperator;
 /**
  * Thread-safe in-memory wallet and ledger transaction repository.
  */
-public class InMemoryWalletRepository implements WalletRepository {
+public class InMemoryWalletRepository implements WalletRepository, ResettableForTesting {
 
     private final Map<String, Wallet> walletStore = new ConcurrentHashMap<>();
     private final Map<String, List<DrawdownTransaction>> transactionStore = new ConcurrentHashMap<>();
@@ -209,7 +211,8 @@ public class InMemoryWalletRepository implements WalletRepository {
         return txs != null ? new ArrayList<>(txs) : List.of();
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         walletStore.clear();
         transactionStore.clear();
         ledgerStore.clear();

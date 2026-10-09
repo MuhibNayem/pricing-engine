@@ -1,5 +1,7 @@
 package com.saas.pricing.metering.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.metering.spi.RatingClaimStore;
 
@@ -20,7 +22,7 @@ import java.util.Optional;
  * A clustered deployment uses the JDBC store, which also provides the atomic compare-and-set the
  * cluster needs.</p>
  */
-public class InMemoryRatingClaimStore implements RatingClaimStore {
+public class InMemoryRatingClaimStore implements RatingClaimStore, ResettableForTesting {
 
     /** Retained long enough to cover any plausible correction window. */
     public static final Duration DEFAULT_TTL = Duration.ofDays(90);
@@ -120,7 +122,8 @@ public class InMemoryRatingClaimStore implements RatingClaimStore {
         }
     }
 
-    public synchronized void clear() {
+    @Override
+    public synchronized void resetForTesting() {
         claims.clear();
     }
 

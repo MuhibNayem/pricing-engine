@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.subscription.Subscription;
@@ -21,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * one that renews itself back to life is the exact failure the absorbing terminal states exist to
  * prevent.
  */
-public class InMemorySubscriptionRepository implements SubscriptionRepository {
+public class InMemorySubscriptionRepository implements SubscriptionRepository, ResettableForTesting {
 
     private final Map<String, Subscription> subscriptions = new ConcurrentHashMap<>();
 
@@ -82,7 +84,8 @@ public class InMemorySubscriptionRepository implements SubscriptionRepository {
         return due;
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         subscriptions.clear();
     }
 }

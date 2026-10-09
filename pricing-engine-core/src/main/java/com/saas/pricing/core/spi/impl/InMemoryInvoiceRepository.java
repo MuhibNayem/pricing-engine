@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.invoice.CreditNote;
@@ -27,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * well is that a deployment which forgets to configure JDBC must not silently lose the guarantees
  * that make invoices defensible.
  */
-public class InMemoryInvoiceRepository implements InvoiceRepository {
+public class InMemoryInvoiceRepository implements InvoiceRepository, ResettableForTesting {
 
     private final Map<String, Invoice> invoices = new ConcurrentHashMap<>();
     private final Map<String, List<CreditNote>> creditNotes = new ConcurrentHashMap<>();
@@ -244,7 +246,8 @@ public class InMemoryInvoiceRepository implements InvoiceRepository {
         return new InvoicePage(page, next);
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         invoices.clear();
         creditNotes.clear();
     }

@@ -265,7 +265,7 @@ Aequitas includes 21 production-ready PostgreSQL Flyway migrations in `pricing-e
 * **`V6` – `V7`**: Invoices and credit notes aggregate tables with strict immutability rules.
 * **`V8` – `V9`**: Append-only customer entitlement event stream with ledger immutability guards.
 * **`V10` – `V11`**: Payment attempt audit ledger with append-only triggers.
-* **`V12` – `V13`**: Transactional outbox table (`outbox_events`) for reliable asynchronous event publication with immutability guards.
+* **`V12` – `V13`**: Transactional outbox table (`outbox_events`), written in the same transaction as the state change it describes, so a committed event cannot be lost from the database. Includes immutability guards. **Delivery is the host's dispatcher**: the library supplies `findDue` / `recordDelivery` / `findUndelivered` and the durable record, but does not run the poll-and-publish loop — an undelivered event is therefore recorded and replayable, not silently dropped.
 * **`V14` – `V15`**: Subscriptions persistence table and valid status transition database constraints.
 * **`V16` – `V17`**: Tenant-scoped idempotency key store and replay fingerprint verification guards.
 * **`V18`**: Subscriptions optimistic locking version column.

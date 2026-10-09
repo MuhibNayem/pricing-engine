@@ -1,5 +1,7 @@
 package com.saas.pricing.metering.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.metering.spi.IdempotencyStore;
 
@@ -30,7 +32,7 @@ import java.util.concurrent.CompletableFuture;
  * expire after {@link #DEFAULT_TTL}. The previous unbounded maps grew for the lifetime of the
  * process on every event and every charge window.</p>
  */
-public class InMemoryIdempotencyStore implements IdempotencyStore {
+public class InMemoryIdempotencyStore implements IdempotencyStore, ResettableForTesting {
 
     /** Retention for an ingestion key. Longer than any plausible transport retry. */
     public static final Duration DEFAULT_TTL = Duration.ofDays(7);
@@ -182,7 +184,8 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
         }
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         synchronized (seenKeys) {
             seenKeys.clear();
         }

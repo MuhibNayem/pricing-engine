@@ -195,7 +195,7 @@ class InMemoryMeterEventRepositoryTest {
         repository.saveEvent(event("evt_1", "idem_1", base));
         repository.saveEvent(event("evt_2", "idem_2", base.plusSeconds(1)));
 
-        repository.clear();
+        repository.resetForTesting();
         assertThat(repository.size()).isZero();
 
         // The dedupe index must be cleared too: re-saving the same identity must be accepted again.

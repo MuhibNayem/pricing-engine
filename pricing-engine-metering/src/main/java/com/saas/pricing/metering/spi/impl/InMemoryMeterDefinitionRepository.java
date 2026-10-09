@@ -1,5 +1,7 @@
 package com.saas.pricing.metering.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.metering.model.MeterDefinition;
 import com.saas.pricing.metering.spi.MeterDefinitionRepository;
 
@@ -13,7 +15,7 @@ import java.util.concurrent.ConcurrentMap;
 /**
  * In-memory repository for storing and resolving MeterDefinitions.
  */
-public class InMemoryMeterDefinitionRepository implements MeterDefinitionRepository {
+public class InMemoryMeterDefinitionRepository implements MeterDefinitionRepository, ResettableForTesting {
 
     private final ConcurrentMap<String, MeterDefinition> definitions = new ConcurrentHashMap<>();
 
@@ -34,7 +36,8 @@ public class InMemoryMeterDefinitionRepository implements MeterDefinitionReposit
         return new ArrayList<>(definitions.values());
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         definitions.clear();
     }
 }

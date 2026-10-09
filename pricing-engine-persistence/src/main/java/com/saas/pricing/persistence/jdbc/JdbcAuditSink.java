@@ -55,14 +55,15 @@ public class JdbcAuditSink implements AuditSink {
         );
     }
 
-    public Optional<PricingResult> findAuditRecord(String calculationId) {
+    public Optional<PricingResult> findAuditRecord(TenantId tenantId, String calculationId) {
+        Objects.requireNonNull(tenantId, "tenantId cannot be null");
         Objects.requireNonNull(calculationId, "calculationId cannot be null");
 
-        String sql = "SELECT payload_json FROM pricing_audit_ledger WHERE calculation_id = ?";
+        String sql = "SELECT payload_json FROM pricing_audit_ledger WHERE tenant_id = ? AND calculation_id = ?";
         List<String> results = jdbcTemplate.query(
             sql,
             (rs, rowNum) -> rs.getString("payload_json"),
-            calculationId
+            tenantId.value(), calculationId
         );
 
         return results.isEmpty() ? Optional.empty() : Optional.of(PricingJsonMapper.fromJson(results.getFirst(), PricingResult.class));

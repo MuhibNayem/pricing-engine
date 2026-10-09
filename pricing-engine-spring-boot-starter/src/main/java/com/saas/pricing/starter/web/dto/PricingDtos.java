@@ -109,6 +109,33 @@ public final class PricingDtos {
         BigDecimal remainingDueAmount
     ) {
         public WalletDrawdownResponseDto {
+            // Validate: if both string and numeric forms are supplied, they must agree
+            if (originalInvoiceAmount != null && originalAmount != null) {
+                BigDecimal parsed = parseMoneyAmount(originalInvoiceAmount);
+                if (parsed != null && parsed.compareTo(originalAmount) != 0) {
+                    throw new IllegalArgumentException(
+                        "originalInvoiceAmount '%s' disagrees with originalAmount %s"
+                            .formatted(originalInvoiceAmount, originalAmount.toPlainString()));
+                }
+            }
+            if (totalCreditMoneyValue != null && creditMoneyAmount != null) {
+                BigDecimal parsed = parseMoneyAmount(totalCreditMoneyValue);
+                if (parsed != null && parsed.compareTo(creditMoneyAmount) != 0) {
+                    throw new IllegalArgumentException(
+                        "totalCreditMoneyValue '%s' disagrees with creditMoneyAmount %s"
+                            .formatted(totalCreditMoneyValue, creditMoneyAmount.toPlainString()));
+                }
+            }
+            if (remainingInvoiceDue != null && remainingDueAmount != null) {
+                BigDecimal parsed = parseMoneyAmount(remainingInvoiceDue);
+                if (parsed != null && parsed.compareTo(remainingDueAmount) != 0) {
+                    throw new IllegalArgumentException(
+                        "remainingInvoiceDue '%s' disagrees with remainingDueAmount %s"
+                            .formatted(remainingInvoiceDue, remainingDueAmount.toPlainString()));
+                }
+            }
+
+            // Fill derived fields from whichever representation was supplied
             if (currency == null) {
                 currency = extractCurrency(originalInvoiceAmount, totalCreditMoneyValue, remainingInvoiceDue);
             }
@@ -192,8 +219,10 @@ public final class PricingDtos {
             String num = idx >= 0 ? s.substring(0, idx) : s;
             try {
                 return new BigDecimal(num.trim());
-            } catch (Exception e) {
-                return null;
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                    "Cannot parse monetary amount from '%s': numeric portion '%s' is not a valid number"
+                        .formatted(s, num.trim()), e);
             }
         }
     }

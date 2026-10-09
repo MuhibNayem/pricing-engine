@@ -76,7 +76,7 @@ class SubscriptionControllerTest {
     @BeforeEach
     void setUp() {
         if (subscriptionRepository instanceof InMemorySubscriptionRepository inMem) {
-            inMem.clear();
+            inMem.resetForTesting();
         }
         if (outboxRepository instanceof InMemoryOutboxRepository inMemOutbox) {
             inMemOutbox.clear();

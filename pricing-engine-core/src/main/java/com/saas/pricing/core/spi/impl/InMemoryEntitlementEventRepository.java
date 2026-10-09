@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.entitlement.EntitlementEvent;
@@ -20,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Enforces the same rules as the JDBC adapter so a deployment that forgets to configure JDBC
  * does not silently lose the guarantees that make the projection trustworthy.
  */
-public class InMemoryEntitlementEventRepository implements EntitlementEventRepository {
+public class InMemoryEntitlementEventRepository implements EntitlementEventRepository, ResettableForTesting {
 
     private static final Comparator<EntitlementEvent> REPLAY_ORDER =
         Comparator.comparing(EntitlementEvent::effectiveAt)
@@ -112,7 +114,8 @@ public class InMemoryEntitlementEventRepository implements EntitlementEventRepos
         }
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         events.clear();
     }
 }

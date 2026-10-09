@@ -1,5 +1,7 @@
 package com.saas.pricing.metering.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.metering.model.MeterEvent;
@@ -27,7 +29,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * hold references to the same {@link MeterEvent} instances, so the extra index costs one additional
  * map entry (not a second copy of the event) per stored event.</p>
  */
-public class InMemoryMeterEventRepository implements MeterEventRepository {
+public class InMemoryMeterEventRepository implements MeterEventRepository, ResettableForTesting {
 
     /** Source of truth for query iteration, keyed by (tenant, eventId). */
     private final ConcurrentMap<String, MeterEvent> eventsByEventId = new ConcurrentHashMap<>();
@@ -105,7 +107,8 @@ public class InMemoryMeterEventRepository implements MeterEventRepository {
             .toList();
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         indexLock.lock();
         try {
             eventsByEventId.clear();

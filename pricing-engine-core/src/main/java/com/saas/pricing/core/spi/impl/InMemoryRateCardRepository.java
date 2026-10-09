@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.PlanCode;
 import com.saas.pricing.core.model.RateCard;
 import com.saas.pricing.core.model.TenantId;
@@ -20,7 +22,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * versioning contract and deterministic version ordering as the JDBC store. Implementing the
  * interface directly - as an earlier version did - silently skipped both.
  */
-public class InMemoryRateCardRepository extends BasePersistentRateCardRepository {
+public class InMemoryRateCardRepository extends BasePersistentRateCardRepository implements ResettableForTesting {
 
     private final Map<String, List<RateCard>> store = new ConcurrentHashMap<>();
 
@@ -56,7 +58,8 @@ public class InMemoryRateCardRepository extends BasePersistentRateCardRepository
         return new ArrayList<>(loadRawCards(tenantId, planCode));
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         store.clear();
     }
 }

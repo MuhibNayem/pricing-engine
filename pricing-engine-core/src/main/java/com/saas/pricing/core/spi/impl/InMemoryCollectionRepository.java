@@ -1,5 +1,7 @@
 package com.saas.pricing.core.spi.impl;
 
+import com.saas.pricing.core.spi.ResettableForTesting;
+
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.collection.PaymentAttempt;
 import com.saas.pricing.core.spi.CollectionRepository;
@@ -19,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Mirrors the JDBC adapter's duplicate semantics: an identical re-delivery is a no-op returning
  * {@code false}, while the same id with different content is refused.
  */
-public class InMemoryCollectionRepository implements CollectionRepository {
+public class InMemoryCollectionRepository implements CollectionRepository, ResettableForTesting {
 
     private final Map<String, List<PaymentAttempt>> attempts = new ConcurrentHashMap<>();
 
@@ -84,7 +86,8 @@ public class InMemoryCollectionRepository implements CollectionRepository {
         return due;
     }
 
-    public void clear() {
+    @Override
+    public void resetForTesting() {
         attempts.clear();
     }
 }
