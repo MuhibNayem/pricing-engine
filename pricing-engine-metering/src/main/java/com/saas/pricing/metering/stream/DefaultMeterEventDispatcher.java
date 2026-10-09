@@ -10,6 +10,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -26,9 +27,13 @@ public class DefaultMeterEventDispatcher implements MeterEventConsumer, MeterEve
 
     private static final System.Logger LOG = System.getLogger(DefaultMeterEventDispatcher.class.getName());
 
+    /** In-flight ceiling: the virtual-thread executor itself has no queue limit. */
+    public static final int MAX_IN_FLIGHT = 10_000;
+
     private final UsageMeteringEngine meteringEngine;
     private final List<MeterEventListener> listeners = new CopyOnWriteArrayList<>();
     private final ExecutorService executor;
+    private final Semaphore inFlight = new Semaphore(MAX_IN_FLIGHT);
     private final LongAdder ingestionFailures = new LongAdder();
     private final LongAdder listenerFailures = new LongAdder();
 
@@ -69,11 +74,28 @@ public class DefaultMeterEventDispatcher implements MeterEventConsumer, MeterEve
     public CompletableFuture<IngestionResult> publish(MeterEvent event) {
         Objects.requireNonNull(event, "event cannot be null");
 
-        return CompletableFuture.supplyAsync(() -> {
-            IngestionResult result = meteringEngine.ingest(event);
-            notifyListeners(event, result);
-            return result;
-        }, executor);
+        // A new virtual thread per message with no ceiling turns a slow engine into unbounded
+        // threads and heap. Refusing beyond the ceiling is backpressure the caller can see and
+        // retry; silently queueing forever is an outage nobody is told about.
+        if (!inFlight.tryAcquire()) {
+            throw new IllegalStateException(
+                "Meter dispatcher backlog exceeds " + MAX_IN_FLIGHT
+                    + " in-flight events; refusing to queue without bound");
+        }
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    IngestionResult result = meteringEngine.ingest(event);
+                    notifyListeners(event, result);
+                    return result;
+                } finally {
+                    inFlight.release();
+                }
+            }, executor);
+        } catch (RuntimeException e) {
+            inFlight.release();
+            throw e;
+        }
     }
 
     private void notifyListeners(MeterEvent event, IngestionResult result) {
