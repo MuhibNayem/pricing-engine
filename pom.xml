@@ -17,6 +17,7 @@
         <module>pricing-engine-evaluator</module>
         <module>pricing-engine-metering</module>
         <module>pricing-engine-persistence</module>
+        <module>pricing-engine-redis</module>
         <module>pricing-engine-spring-boot-starter</module>
     </modules>
 

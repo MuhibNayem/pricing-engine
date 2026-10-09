@@ -36,7 +36,31 @@ pricing:
     streaming:
       enabled: true
       async-rating-enabled: true      # Project Loom virtual thread dispatcher
+
+    # Admission control. Off by default: unconfigured, the engine sheds nothing and the hot path
+    # pays no allocation and no CAS. Turn it on once you have sized your database pool and want the
+    # engine to refuse cleanly above that point rather than degrade inside the pricing path.
+    admission:
+      enabled: true
+      permits: 1000                    # sustained permits per period, per tenant
+      period: 1s
+      burst: 1000                      # largest burst a tenant may send at once
+      max-concurrency: 256             # in-flight ceiling across ALL tenants on this node
 ```
+
+Shed requests carry `Retry-After` and a distinct status, and the split matters operationally:
+
+| Condition | Status | Meaning |
+| :--- | :--- | :--- |
+| Tenant over its token bucket | `429` | That tenant's quota. The engine is healthy. |
+| Engine at its in-flight ceiling | `503` | This node is at capacity. No tenant's quota is at fault. |
+
+Answering `503` to a tenant that is merely over its own rate makes every healthy caller believe the
+platform is down and hides the real problem from monitoring.
+
+This governs the engine's own capacity. Per-IP and per-API-key limiting belongs to the gateway in
+front of it — a library cannot see the caller. Note also that the limits are **per process**: behind
+N load balancers the effective per-tenant rate is N times the configured one.
 
 ---
 

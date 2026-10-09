@@ -43,6 +43,7 @@ pricing-engine/
 ├── pricing-engine-evaluator/          # Sandboxed SpEL dynamic mathematical expression evaluator
 ├── pricing-engine-metering/           # Real-time event metering, aggregations, stream converters, async rating
 ├── pricing-engine-persistence/        # PostgreSQL JDBC repositories, JSONB mappings, Flyway DDL migrations
+├── pricing-engine-redis/              # OPTIONAL Redis IdempotencyKeyStore (Lettuce + Lua). Nothing depends on it
 └── pricing-engine-spring-boot-starter/# Spring Boot 4 starter, Auto-Configuration, REST controllers, metrics
 ```
 
@@ -52,6 +53,7 @@ pricing-engine/
 | `pricing-engine-evaluator` | Dynamic formula evaluation with strict security sandboxing (blocking reflection, classloaders, and unauthorized methods). |
 | `pricing-engine-metering` | Meter event ingestion, idempotency deduplication, time windowing, out-of-order event invalidation, and `AsyncRatingTriggerService`. |
 | `pricing-engine-persistence` | Production PostgreSQL JDBC repositories with bi-temporal queries, JSONB object mappers, and Flyway migration scripts. |
+| `pricing-engine-redis` | **Optional.** Redis-backed `IdempotencyKeyStore` (Lettuce + Lua, atomic decide). PostgreSQL remains the system of record. No other module depends on this one. See [its README](pricing-engine-redis/README.md). |
 | `pricing-engine-spring-boot-starter` | Spring Boot 4 auto-configuration, REST controllers (`/api/v1/pricing` & `/api/v1/pricing/meter`), Micrometer metrics, and Scoped Values context. |
 
 ---
@@ -309,12 +311,13 @@ The default build excludes the `load` and `soak` profiles; run them deliberately
 
 ### Test Results Summary:
 * `pricing-engine-parent`: SUCCESS
-* `pricing-engine-core`: 366 tests passed, 0 failures, 0 errors
+* `pricing-engine-core`: 377 tests passed, 0 failures, 0 errors
 * `pricing-engine-evaluator`: 50 tests passed, 0 failures, 0 errors
-* `pricing-engine-metering`: 71 tests passed, 0 failures, 0 errors
-* `pricing-engine-persistence`: 119 tests passed, 0 failures, 0 errors
-* `pricing-engine-spring-boot-starter`: 169 tests passed, 0 failures, 0 errors
-* **Total: 775 tests run, 0 failures, 0 errors, 0 skipped.**
+* `pricing-engine-metering`: 84 tests passed, 0 failures, 0 errors
+* `pricing-engine-persistence`: 124 tests passed, 0 failures, 0 errors
+* `pricing-engine-redis`: 18 tests passed, 0 failures, 0 errors
+* `pricing-engine-spring-boot-starter`: 173 tests passed, 0 failures, 0 errors
+* **Total: 826 tests run, 0 failures, 0 errors, 0 skipped.**
 
 ---
 

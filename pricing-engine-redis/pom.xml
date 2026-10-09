@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.saas.pricing</groupId>
+        <artifactId>pricing-engine-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>pricing-engine-redis</artifactId>
+    <name>Pricing Engine Redis Adapter (optional)</name>
+    <description>
+        Optional Redis-backed IdempotencyKeyStore for a host that already runs Redis and wants
+        sub-millisecond deduplication in front of PostgreSQL. Nothing else in the library depends on
+        this module: PostgreSQL remains the authoritative store and Redis is a fast path.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.saas.pricing</groupId>
+            <artifactId>pricing-engine-core</artifactId>
+        </dependency>
+
+        <!--
+            Lettuce, not Jedis: one thread-safe multiplexed connection instead of a pool, and the
+            only client that supports Spring's reactive API. Version comes from the Spring Boot BOM
+            the parent already imports, so it tracks the rest of the build.
+        -->
+        <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-bom</artifactId>
+            <version>${testcontainers.version}</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
