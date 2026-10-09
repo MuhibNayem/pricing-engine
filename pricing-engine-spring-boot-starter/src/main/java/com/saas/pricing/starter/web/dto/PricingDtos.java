@@ -102,8 +102,101 @@ public final class PricingDtos {
         BigDecimal totalCreditsDrawn,
         String totalCreditMoneyValue,
         String remainingInvoiceDue,
-        boolean fullyCovered
-    ) {}
+        boolean fullyCovered,
+        String currency,
+        BigDecimal originalAmount,
+        BigDecimal creditMoneyAmount,
+        BigDecimal remainingDueAmount
+    ) {
+        public WalletDrawdownResponseDto {
+            if (currency == null) {
+                currency = extractCurrency(originalInvoiceAmount, totalCreditMoneyValue, remainingInvoiceDue);
+            }
+            if (originalAmount == null && originalInvoiceAmount != null) {
+                originalAmount = parseMoneyAmount(originalInvoiceAmount);
+            }
+            if (creditMoneyAmount == null && totalCreditMoneyValue != null) {
+                creditMoneyAmount = parseMoneyAmount(totalCreditMoneyValue);
+            }
+            if (remainingDueAmount == null && remainingInvoiceDue != null) {
+                remainingDueAmount = parseMoneyAmount(remainingInvoiceDue);
+            }
+            if (originalInvoiceAmount == null && originalAmount != null) {
+                originalInvoiceAmount = originalAmount.stripTrailingZeros().toPlainString()
+                    + (currency != null ? " " + currency : "");
+            }
+            if (totalCreditMoneyValue == null && creditMoneyAmount != null) {
+                totalCreditMoneyValue = creditMoneyAmount.stripTrailingZeros().toPlainString()
+                    + (currency != null ? " " + currency : "");
+            }
+            if (remainingInvoiceDue == null && remainingDueAmount != null) {
+                remainingInvoiceDue = remainingDueAmount.stripTrailingZeros().toPlainString()
+                    + (currency != null ? " " + currency : "");
+            }
+        }
+
+        public WalletDrawdownResponseDto(
+            String walletId,
+            String originalInvoiceAmount,
+            BigDecimal totalCreditsDrawn,
+            String totalCreditMoneyValue,
+            String remainingInvoiceDue,
+            boolean fullyCovered
+        ) {
+            this(
+                walletId,
+                originalInvoiceAmount,
+                totalCreditsDrawn,
+                totalCreditMoneyValue,
+                remainingInvoiceDue,
+                fullyCovered,
+                null,
+                null,
+                null,
+                null
+            );
+        }
+
+        public static WalletDrawdownResponseDto from(com.saas.pricing.core.model.wallet.WalletDrawdownResult result) {
+            java.util.Objects.requireNonNull(result, "WalletDrawdownResult cannot be null");
+            return new WalletDrawdownResponseDto(
+                result.walletId(),
+                result.originalInvoiceAmount().toString(),
+                result.totalCreditsDrawn(),
+                result.totalCreditMoneyValue().toString(),
+                result.remainingInvoiceDue().toString(),
+                result.isFullyCoveredByCredits(),
+                result.originalInvoiceAmount().currency().code(),
+                result.originalInvoiceAmount().amount(),
+                result.totalCreditMoneyValue().amount(),
+                result.remainingInvoiceDue().amount()
+            );
+        }
+
+        private static String extractCurrency(String... candidates) {
+            if (candidates == null) return null;
+            for (String s : candidates) {
+                if (s != null) {
+                    int idx = s.lastIndexOf(' ');
+                    if (idx >= 0 && idx < s.length() - 1) {
+                        return s.substring(idx + 1);
+                    }
+                }
+            }
+            return null;
+        }
+
+        private static BigDecimal parseMoneyAmount(String s) {
+            if (s == null) return null;
+            int idx = s.lastIndexOf(' ');
+            String num = idx >= 0 ? s.substring(0, idx) : s;
+            try {
+                return new BigDecimal(num.trim());
+            } catch (Exception e) {
+                return null;
+            }
+        }
+    }
 
     public record MeterEventDto(
         @NotBlank String eventId,

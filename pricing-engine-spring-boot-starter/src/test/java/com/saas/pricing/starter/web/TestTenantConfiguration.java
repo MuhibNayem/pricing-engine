@@ -35,4 +35,9 @@ public class TestTenantConfiguration {
     public static void actAs(String tenantId) {
         AUTHENTICATED_TENANT.set(tenantId);
     }
+
+    /** Resets the authenticated tenant to the default "tenant_rest". */
+    public static void reset() {
+        AUTHENTICATED_TENANT.remove();
+    }
 }

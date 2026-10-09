@@ -409,7 +409,11 @@ class MeteringControllerTest {
             .andExpect(jsonPath("$.originalInvoiceAmount", is("10 USD")))
             .andExpect(jsonPath("$.totalCreditsDrawn", is(10.0)))
             .andExpect(jsonPath("$.remainingInvoiceDue", is("0 USD")))
-            .andExpect(jsonPath("$.fullyCovered", is(true)));
+            .andExpect(jsonPath("$.fullyCovered", is(true)))
+            .andExpect(jsonPath("$.currency", is("USD")))
+            .andExpect(jsonPath("$.originalAmount", is(10.0)))
+            .andExpect(jsonPath("$.creditMoneyAmount", is(10.0)))
+            .andExpect(jsonPath("$.remainingDueAmount", is(0.0)));
     }
 
     @Test

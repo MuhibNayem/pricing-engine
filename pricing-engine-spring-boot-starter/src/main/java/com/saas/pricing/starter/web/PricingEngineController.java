@@ -132,14 +132,7 @@ public class PricingEngineController {
         }
 
         WalletDrawdownResult result = pricingService.evaluateAndDrawdown(builder.build());
-        return ResponseEntity.ok(new PricingDtos.WalletDrawdownResponseDto(
-            result.walletId(),
-            result.originalInvoiceAmount().toString(),
-            result.totalCreditsDrawn(),
-            result.totalCreditMoneyValue().toString(),
-            result.remainingInvoiceDue().toString(),
-            result.isFullyCoveredByCredits()
-        ));
+        return ResponseEntity.ok(PricingDtos.WalletDrawdownResponseDto.from(result));
     }
 
     private PricingRequest mapToDomainRequest(PricingDtos.PricingEvaluationRequestDto dto) {

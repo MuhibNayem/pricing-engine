@@ -155,12 +155,12 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
     /**
      * Returns the handle claimed for a composite key, if any.
      */
-    @SuppressWarnings("unchecked")
     public <T> Optional<T> findResult(String compositeKey, Class<T> type) {
         Objects.requireNonNull(compositeKey, "compositeKey cannot be null");
         Objects.requireNonNull(type, "type cannot be null");
         synchronized (results) {
-            return Optional.ofNullable((T) results.get(compositeKey));
+            Object val = results.get(compositeKey);
+            return val != null && type.isInstance(val) ? Optional.of(type.cast(val)) : Optional.empty();
         }
     }
 

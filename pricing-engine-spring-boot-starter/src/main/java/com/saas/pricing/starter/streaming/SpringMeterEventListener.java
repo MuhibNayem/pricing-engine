@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Spring event listener handling ingested meter events.
@@ -24,12 +25,22 @@ public class SpringMeterEventListener {
 
     private final java.util.List<java.util.function.Consumer<MeterIngestedApplicationEvent>> customHandlers = new java.util.concurrent.CopyOnWriteArrayList<>();
 
+    public SpringMeterEventListener() {
+        this(null);
+    }
+
     public SpringMeterEventListener(AsyncRatingTriggerService asyncRatingTriggerService) {
         this.asyncRatingTriggerService = asyncRatingTriggerService;
     }
 
-    public AsyncRatingTriggerService getAsyncRatingTriggerService() {
-        return asyncRatingTriggerService;
+    /**
+     * Exposes the {@link AsyncRatingTriggerService} for event handlers to invoke.
+     *
+     * @return an {@link Optional} containing the service if async rating is enabled and configured,
+     *         or {@link Optional#empty()} if async rating is disabled.
+     */
+    public Optional<AsyncRatingTriggerService> getAsyncRatingTriggerService() {
+        return Optional.ofNullable(asyncRatingTriggerService);
     }
 
     public void addHandler(java.util.function.Consumer<MeterIngestedApplicationEvent> handler) {

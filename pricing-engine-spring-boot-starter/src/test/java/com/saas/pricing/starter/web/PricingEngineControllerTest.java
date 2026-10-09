@@ -561,7 +561,11 @@ class PricingEngineControllerTest {
             .andExpect(jsonPath("$.walletId", is("wal_rest_1")))
             .andExpect(jsonPath("$.originalInvoiceAmount", is("100 USD")))
             .andExpect(jsonPath("$.totalCreditsDrawn", is(100.0)))
-            .andExpect(jsonPath("$.fullyCovered", is(true)));
+            .andExpect(jsonPath("$.fullyCovered", is(true)))
+            .andExpect(jsonPath("$.currency", is("USD")))
+            .andExpect(jsonPath("$.originalAmount", is(100.0)))
+            .andExpect(jsonPath("$.creditMoneyAmount", is(100.0)))
+            .andExpect(jsonPath("$.remainingDueAmount", is(0.0)));
     }
 
     @Test

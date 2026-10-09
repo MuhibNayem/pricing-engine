@@ -69,4 +69,10 @@ public class VirtualThreadAuditSink implements AuditSink, AutoCloseable {
             virtualExecutor.shutdownNow();
         }
     }
+
+    public void clear() {
+        if (delegate instanceof InMemoryAuditSink inMem) {
+            inMem.clear();
+        }
+    }
 }

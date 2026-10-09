@@ -102,13 +102,87 @@ class PricingEngineAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("Should omit asyncRatingTriggerService when async-rating-enabled is false")
+    @DisplayName("Should wrap currencyExchangeProvider with default CacheProvider when enable-caching is true")
+    void testEnableCachingDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).hasSingleBean(com.saas.pricing.core.spi.CacheProvider.class);
+            var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
+            assertThat(provider).isInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
+        });
+    }
+
+    @Test
+    @DisplayName("Should safely ignore differently-keyed CacheProvider without deferred failure")
+    void testDifferentlyKeyedCacheProviderIgnored() {
+        contextRunner
+            .withBean("customCache", com.saas.pricing.core.spi.CacheProvider.class,
+                () -> new com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider<Long, String>())
+            .run(context -> {
+                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
+                assertThat(provider).isNotInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should safely ignore differently-keyed CacheProvider even when named cacheProvider")
+    void testDifferentlyKeyedCacheProviderNamedCacheProviderIgnored() {
+        contextRunner
+            .withBean("cacheProvider", com.saas.pricing.core.spi.CacheProvider.class,
+                () -> new com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider<Long, String>())
+            .run(context -> {
+                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
+                assertThat(provider).isNotInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
+            });
+    }
+
+    static class CustomFxCacheProvider extends com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider<String, java.math.BigDecimal> {}
+    static class CustomIncompatibleCacheProvider extends com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider<Long, String> {}
+
+    @Test
+    @DisplayName("Should wrap currencyExchangeProvider when host provides custom CacheProvider<String, BigDecimal>")
+    void testCustomCompatibleCacheProviderAccepted() {
+        contextRunner
+            .withBean("customFxCache", CustomFxCacheProvider.class, CustomFxCacheProvider::new)
+            .run(context -> {
+                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
+                assertThat(provider).isInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should safely ignore custom class CacheProvider with incompatible generics")
+    void testCustomIncompatibleClassCacheProviderIgnored() {
+        contextRunner
+            .withBean("customIncompatibleCache", CustomIncompatibleCacheProvider.class, CustomIncompatibleCacheProvider::new)
+            .run(context -> {
+                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
+                assertThat(provider).isNotInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should omit asyncRatingTriggerService when async-rating-enabled is false and return Optional.empty from listener")
     void testAsyncRatingEnabledFalse() {
         contextRunner
             .withPropertyValues("pricing.engine.streaming.async-rating-enabled=false")
             .run(context -> {
                 assertThat(context).doesNotHaveBean(AsyncRatingTriggerService.class);
+                assertThat(context).hasSingleBean(com.saas.pricing.starter.streaming.SpringMeterEventListener.class);
+                var listener = context.getBean(com.saas.pricing.starter.streaming.SpringMeterEventListener.class);
+                assertThat(listener.getAsyncRatingTriggerService()).isEmpty();
             });
+    }
+
+    @Test
+    @DisplayName("Should expose AsyncRatingTriggerService via Optional in SpringMeterEventListener when enabled")
+    void testAsyncRatingTriggerServiceExposedAsOptional() {
+        contextRunner.run(context -> {
+            assertThat(context).hasSingleBean(AsyncRatingTriggerService.class);
+            var listener = context.getBean(com.saas.pricing.starter.streaming.SpringMeterEventListener.class);
+            assertThat(listener.getAsyncRatingTriggerService())
+                .isPresent()
+                .containsSame(context.getBean(AsyncRatingTriggerService.class));
+        });
     }
 
     @Test

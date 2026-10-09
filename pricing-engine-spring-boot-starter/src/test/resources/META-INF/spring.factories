@@ -1,0 +1,2 @@
+org.springframework.test.context.TestExecutionListener=\
+  com.saas.pricing.starter.test.FixtureResetTestExecutionListener

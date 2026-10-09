@@ -8,7 +8,11 @@ import com.saas.pricing.core.model.RateCard;
 import com.saas.pricing.core.model.RatePlanItem;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.subscription.Subscription;
+import com.saas.pricing.core.model.event.InMemoryOutboxRepository;
+import com.saas.pricing.core.model.event.OutboxRepository;
 import com.saas.pricing.core.spi.RateCardRepository;
+import com.saas.pricing.core.spi.SubscriptionRepository;
+import com.saas.pricing.core.spi.impl.InMemorySubscriptionRepository;
 import com.saas.pricing.starter.PricingEngineAutoConfiguration;
 import com.saas.pricing.starter.SubscriptionCommandService;
 import org.junit.jupiter.api.BeforeEach;
@@ -61,10 +65,23 @@ class SubscriptionControllerTest {
     @Autowired
     private RateCardRepository rateCardRepository;
 
+    @Autowired
+    private SubscriptionRepository subscriptionRepository;
+
+    @Autowired(required = false)
+    private OutboxRepository outboxRepository;
+
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
+        if (subscriptionRepository instanceof InMemorySubscriptionRepository inMem) {
+            inMem.clear();
+        }
+        if (outboxRepository instanceof InMemoryOutboxRepository inMemOutbox) {
+            inMemOutbox.clear();
+        }
+
         LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
         validator.afterPropertiesSet();
 
@@ -126,11 +143,11 @@ class SubscriptionControllerTest {
     @Test
     @DisplayName("GET /subscriptions lists subscriptions for a customer")
     void testListSubscriptions() throws Exception {
-        seedSubscription("sub-list-1", "c_sub_list");
+        seedSubscription("sub-list-1");
 
         mockMvc.perform(get("/api/v1/pricing/subscriptions")
                 .param("tenantId", TENANT)
-                .param("customerId", "c_sub_list"))
+                .param("customerId", CUSTOMER))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$", hasSize(1)))
             .andExpect(jsonPath("$[0].subscriptionId", is("sub-list-1")));

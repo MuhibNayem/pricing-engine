@@ -64,8 +64,13 @@ import com.saas.pricing.starter.web.PricingEngineController;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.ListableBeanFactory;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.core.ResolvableType;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -480,16 +485,86 @@ public class PricingEngineAutoConfiguration {
     @ConditionalOnMissingBean
     public CurrencyExchangeProvider currencyExchangeProvider(
         PricingEngineProperties properties,
-        @Autowired(required = false) CacheProvider<?, ?> cacheProvider
+        @Autowired(required = false) CacheProvider<String, BigDecimal> cacheProvider,
+        BeanFactory beanFactory
     ) {
         log.info("Pricing Engine: Initializing default InMemoryCurrencyExchangeProvider");
         CurrencyExchangeProvider provider = new InMemoryCurrencyExchangeProvider();
-        if (properties.isEnableCaching() && cacheProvider != null) {
-            @SuppressWarnings("unchecked")
-            var castCache = (CacheProvider<String, BigDecimal>) (CacheProvider<?, ?>) cacheProvider;
-            return new CachedCurrencyExchangeProvider(provider, castCache);
+        if (properties.isEnableCaching() && isCompatibleFxCache(cacheProvider, beanFactory)) {
+            return new CachedCurrencyExchangeProvider(provider, cacheProvider);
         }
         return provider;
+    }
+
+    private boolean isCompatibleFxCache(
+        CacheProvider<String, BigDecimal> candidate,
+        BeanFactory beanFactory
+    ) {
+        if (candidate == null) {
+            return false;
+        }
+        if (!(beanFactory instanceof ListableBeanFactory lbf)) {
+            return true;
+        }
+
+        String candidateBeanName = null;
+        for (String name : lbf.getBeanNamesForType(CacheProvider.class)) {
+            try {
+                if (lbf.getBean(name) == candidate) {
+                    candidateBeanName = name;
+                    break;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        if (candidateBeanName == null) {
+            return false;
+        }
+
+        if (lbf instanceof ConfigurableListableBeanFactory clbf && clbf.containsBeanDefinition(candidateBeanName)) {
+            BeanDefinition bd = clbf.getBeanDefinition(candidateBeanName);
+            ResolvableType targetType = bd.getResolvableType();
+            if (targetType != null && targetType.hasGenerics()) {
+                ResolvableType cacheType = targetType.as(CacheProvider.class);
+                Class<?> k = cacheType.getGeneric(0).resolve();
+                Class<?> v = cacheType.getGeneric(1).resolve();
+                if (k != null && v != null && k != Object.class && v != Object.class) {
+                    if (String.class.isAssignableFrom(k) && BigDecimal.class.isAssignableFrom(v)) {
+                        return true;
+                    } else {
+                        log.warn("Pricing Engine: Ignoring CacheProvider bean '{}' because generic types <{}, {}> do not match required <String, BigDecimal>",
+                            candidateBeanName, k.getSimpleName(), v.getSimpleName());
+                        return false;
+                    }
+                }
+            }
+        }
+
+        ResolvableType classType = ResolvableType.forClass(candidate.getClass()).as(CacheProvider.class);
+        if (classType.hasGenerics()) {
+            Class<?> k = classType.getGeneric(0).resolve();
+            Class<?> v = classType.getGeneric(1).resolve();
+            if (k != null && v != null && k != Object.class && v != Object.class) {
+                if (String.class.isAssignableFrom(k) && BigDecimal.class.isAssignableFrom(v)) {
+                    return true;
+                } else {
+                    log.warn("Pricing Engine: Ignoring CacheProvider bean '{}' because implemented generic types <{}, {}> do not match required <String, BigDecimal>",
+                        candidateBeanName, k.getSimpleName(), v.getSimpleName());
+                    return false;
+                }
+            }
+        }
+
+        try {
+            candidate.get("probe:test:compatibility");
+        } catch (ClassCastException cce) {
+            log.warn("Pricing Engine: CacheProvider bean '{}' failed compatibility probe with ClassCastException", candidateBeanName, cce);
+            return false;
+        }
+
+        log.warn("Pricing Engine: Ignoring untyped/raw foreign CacheProvider bean '{}' for FX exchange rate caching", candidateBeanName);
+        return false;
     }
 
     @Bean
@@ -505,9 +580,9 @@ public class PricingEngineAutoConfiguration {
     }
 
     @Bean
-    @ConditionalOnMissingBean
+    @ConditionalOnMissingBean(CacheProvider.class)
     @ConditionalOnProperty(prefix = "pricing.engine", name = "enable-caching", havingValue = "true", matchIfMissing = true)
-    public CacheProvider<?, ?> cacheProvider() {
+    public CacheProvider<String, BigDecimal> cacheProvider() {
         return new ConcurrentMapCacheProvider<>();
     }
 

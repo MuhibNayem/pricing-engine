@@ -138,15 +138,7 @@ public class MeteringController {
         billableItems.forEach(builder::item);
 
         WalletDrawdownResult drawdownResult = pricingService.evaluateAndDrawdown(builder.build());
-
-        return ResponseEntity.ok(new PricingDtos.WalletDrawdownResponseDto(
-            drawdownResult.walletId(),
-            drawdownResult.originalInvoiceAmount().toString(),
-            drawdownResult.totalCreditsDrawn(),
-            drawdownResult.totalCreditMoneyValue().toString(),
-            drawdownResult.remainingInvoiceDue().toString(),
-            drawdownResult.isFullyCoveredByCredits()
-        ));
+        return ResponseEntity.ok(PricingDtos.WalletDrawdownResponseDto.from(drawdownResult));
     }
 
     private MeterEvent mapToMeterEvent(PricingDtos.MeterEventDto dto) {

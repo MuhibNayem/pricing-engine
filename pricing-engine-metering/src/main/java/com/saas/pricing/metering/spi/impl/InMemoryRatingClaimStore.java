@@ -120,6 +120,10 @@ public class InMemoryRatingClaimStore implements RatingClaimStore {
         }
     }
 
+    public synchronized void clear() {
+        claims.clear();
+    }
+
     private record ClaimEntry(Charged charged, Instant writtenAt) {
     }
 }

@@ -33,4 +33,11 @@ public class CachedCurrencyExchangeProvider implements CurrencyExchangeProvider 
         String k = key(from, to, timestamp);
         return cache.computeIfAbsent(k, () -> delegate.getExchangeRate(from, to, timestamp));
     }
+
+    public void clear() {
+        cache.clear();
+        if (delegate instanceof InMemoryCurrencyExchangeProvider inMem) {
+            inMem.clear();
+        }
+    }
 }

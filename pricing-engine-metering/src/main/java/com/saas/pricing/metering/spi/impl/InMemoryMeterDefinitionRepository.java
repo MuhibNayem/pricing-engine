@@ -33,4 +33,8 @@ public class InMemoryMeterDefinitionRepository implements MeterDefinitionReposit
     public List<MeterDefinition> findAll() {
         return new ArrayList<>(definitions.values());
     }
+
+    public void clear() {
+        definitions.clear();
+    }
 }

@@ -82,4 +82,8 @@ public class InMemoryCurrencyExchangeProvider implements CurrencyExchangeProvide
         if (inverse != null) return BigDecimal.ONE.divide(inverse, 12, RoundingMode.HALF_EVEN);
         return null;
     }
+
+    public void clear() {
+        directRates.clear();
+    }
 }
