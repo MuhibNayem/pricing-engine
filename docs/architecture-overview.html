@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aequitas — Architecture Overview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f7f5f0;
+  --card:#ffffff;
+  --line:#e9e3d6;
+  --line-soft:#f0ece2;
+  --ink:#14171e;
+  --body:#3a4256;
+  --muted:#7c7a72;
+  --primary:#2f6f5e;
+  --primary-soft:rgba(47,111,94,.08);
+  --warn:#c97b3f;
+  --warn-soft:rgba(201,123,63,.10);
+  --rose:#b06367;
+  --rose-soft:rgba(176,99,103,.09);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--bg);
+  color:var(--body);
+  font-family:'Outfit',sans-serif;
+  font-size:15px;
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(560px 320px at 88% -6%, rgba(47,111,94,.055), transparent 70%),
+    radial-gradient(480px 300px at 4% 8%, rgba(201,123,63,.045), transparent 70%);
+}
+.wrap{position:relative;z-index:1;max-width:1040px;margin:0 auto;padding:0 28px 96px}
+h1,h2,h3{font-family:'DM Serif Display',serif;color:var(--ink);font-weight:400;letter-spacing:-.005em;line-height:1.14}
+h1{font-size:clamp(38px,6.2vw,62px)}
+h2{font-size:clamp(25px,3.4vw,33px)}
+h3{font-size:19px}
+code,.mono{font-family:'JetBrains Mono',monospace;font-size:.86em}
+p{margin-bottom:10px}
+section{margin-top:72px}
+.eyebrow{
+  font-family:'Outfit',sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--primary);margin-bottom:12px;display:flex;align-items:center;gap:9px;
+}
+.eyebrow svg{width:15px;height:15px;flex:none}
+.lede{font-size:17.5px;color:var(--body);max-width:70ch;margin-top:14px}
+.hr{height:1px;background:var(--line);margin:0}
+
+/* hero */
+.hero{padding:74px 0 8px}
+.hero .sub{font-size:13.5px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:14px;letter-spacing:.01em}
+.tagline{font-size:20px;color:var(--body);max-width:60ch;margin-top:22px;line-height:1.5}
+.tagline em{font-style:normal;color:var(--primary);font-weight:600}
+
+.statrow{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));
+  gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:42px;
+}
+.stat{background:var(--card);padding:20px 18px}
+.stat .n{font-family:'DM Serif Display',serif;font-size:29px;color:var(--ink);line-height:1.05;letter-spacing:-.01em}
+.stat .l{font-size:12.5px;color:var(--muted);margin-top:5px;line-height:1.35}
+
+/* cards */
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px 26px;box-shadow:0 2px 8px rgba(0,0,0,.035)}
+.card.tight{padding:20px 22px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.grid-7-5{display:grid;grid-template-columns:7fr 5fr;gap:22px}
+
+/* svg diagram */
+.diagram{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 20px 18px;box-shadow:0 4px 16px -2px rgba(0,0,0,.05);overflow-x:auto}
+.diagram svg{display:block;width:100%;height:auto;min-width:660px}
+.dnode rect{fill:#fbfaf7;stroke:var(--line);stroke-width:1.5}
+.dnode.hi rect{fill:var(--primary-soft);stroke:var(--primary);stroke-width:1.75}
+.dnode text{font-family:'Outfit',sans-serif;fill:var(--ink)}
+.dnode .nm{font-size:14px;font-weight:600}
+.dnode .dp{font-family:'JetBrains Mono',monospace;font-size:9.5px;fill:var(--muted)}
+.darrow{stroke:var(--primary);stroke-width:1.6;fill:none;opacity:.5}
+.dlabel{font-family:'JetBrains Mono',monospace;font-size:9px;fill:var(--muted)}
+
+/* bench */
+.bench{display:grid;grid-template-columns:150px 1fr 62px;gap:12px;align-items:center;padding:5px 0}
+.bench-label{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--ink)}
+.bench-track{height:15px;background:var(--line-soft);border-radius:6px;overflow:hidden}
+.bench-fill{height:100%;border-radius:6px;background:var(--primary)}
+.bench-val{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--muted);text-align:right}
+.bench-fill.zero{background:var(--line)}
+
+/* kv */
+.kv{display:grid;grid-template-columns:132px 1fr;row-gap:0;margin:0;font-size:13.5px}
+.kv dt{color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:11.5px;padding:9px 0;border-bottom:1px dashed var(--line)}
+.kv dd{margin:0;padding:9px 0;border-bottom:1px dashed var(--line);color:var(--ink)}
+
+/* seam table */
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+thead th{
+  text-align:left;font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--muted);padding:0 12px 9px 0;border-bottom:1.5px solid var(--line);
+}
+tbody td{padding:11px 12px 11px 0;border-bottom:1px solid var(--line-soft);vertical-align:top}
+tbody tr:last-child td{border-bottom:none}
+tbody td:first-child{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--ink);white-space:nowrap}
+tbody td:nth-child(2){color:var(--body)}
+.pill{display:inline-block;font-size:10.5px;font-family:'JetBrains Mono',monospace;padding:2px 7px;border-radius:5px;letter-spacing:.02em}
+.pill.lib{background:var(--primary-soft);color:var(--primary)}
+.pill.host{background:var(--warn-soft);color:var(--warn)}
+
+/* timeline */
+.timeline{list-style:none;position:relative;padding:0}
+.timeline::before{content:"";position:absolute;left:8px;top:8px;bottom:8px;width:2px;background:var(--primary);opacity:.3}
+.timeline li{position:relative;padding:0 0 26px 32px}
+.timeline li:last-child{padding-bottom:0}
+.timeline li::before{content:"";position:absolute;left:2px;top:5px;width:13px;height:13px;border-radius:50%;background:var(--bg);border:2px solid var(--primary)}
+.timeline strong{color:var(--ink);font-weight:600;font-size:15px;display:block;margin-bottom:2px}
+.timeline p{margin:0;font-size:13.5px}
+
+/* callout */
+.note{border-radius:14px;padding:18px 20px;font-size:14px;display:flex;gap:13px;align-items:flex-start}
+.note svg{width:17px;height:17px;flex:none;margin-top:2px}
+.note.warn{background:var(--warn-soft);border:1px solid rgba(201,123,63,.22)}
+.note.warn svg{color:var(--warn)}
+.note.plain{background:var(--card);border:1px solid var(--line)}
+.note.plain svg{color:var(--primary)}
+.note b{color:var(--ink);font-weight:600}
+
+ul.ticks{list-style:none;margin-top:4px}
+ul.ticks li{position:relative;padding-left:24px;margin-bottom:11px;font-size:14px}
+ul.ticks li::before{
+  content:"";position:absolute;left:2px;top:7px;width:9px;height:9px;border-radius:50%;
+  border:2px solid var(--primary);
+}
+ul.ticks li b{color:var(--ink);font-weight:600}
+ul.cross li::before{border-color:var(--rose)}
+
+.footnote{font-size:12.5px;color:var(--muted);margin-top:14px;line-height:1.5}
+
+@media(max-width:820px){
+  .grid2,.grid-7-5{grid-template-columns:1fr}
+  .wrap{padding:0 20px 72px}
+  section{margin-top:54px}
+  .hero{padding:52px 0 4px}
+  .bench{grid-template-columns:104px 1fr 52px;gap:9px}
+  .kv{grid-template-columns:110px 1fr}
+  h1{font-size:36px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      Aequitas
+    </div>
+    <h1>An embeddable pricing engine,<br>not a service.</h1>
+    <p class="tagline">It owns the money decisions and the durability guarantees. Everything around them — identity, timers, brokers, payment rails — <em>stays with your host</em>, behind a typed seam.</p>
+    <p class="sub">Java 25 · Spring Boot 4.1.1 · 5 modules · 735 tests green</p>
+
+    <div class="statrow">
+      <div class="stat"><div class="n">0</div><div class="l">runtime dependencies in <code>core</code></div></div>
+      <div class="stat"><div class="n">26</div><div class="l">SPI seams, each with in-memory + JDBC impls</div></div>
+      <div class="stat"><div class="n">735</div><div class="l">tests passing across 5 modules</div></div>
+      <div class="stat"><div class="n">21</div><div class="l">migrations, 7 with Postgres immutability triggers</div></div>
+    </div>
+  </header>
+
+  <div class="hr" style="margin-top:56px"></div>
+
+  <!-- ARCHITECTURE -->
+  <section>
+    <div class="eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Module layering
+    </div>
+    <h2>A strict acyclic stack, dependency-counted</h2>
+    <p class="lede">Nothing in <code>core</code> is aware that Spring, JDBC, or Jackson exist. That is what makes the money logic testable in isolation and portable to any host — and it is enforced by the build, not by convention.</p>
+
+    <div class="diagram" style="margin-top:26px">
+      <svg viewBox="0 0 960 400" role="img" aria-label="Module dependency diagram">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#2f6f5e" opacity=".5"/>
+          </marker>
+        </defs>
+
+        <!-- tier A: starter -->
+        <g class="dnode">
+          <rect x="250" y="18" width="460" height="62" rx="11"/>
+          <text class="nm" x="272" y="44">pricing-engine-spring-boot-starter</text>
+          <text class="dp" x="272" y="63">Boot 4.1.1 · web · jdbc · micrometer · 25 REST endpoints</text>
+        </g>
+
+        <!-- tier B -->
+        <g class="dnode">
+          <rect x="30" y="150" width="270" height="62" rx="11"/>
+          <text class="nm" x="50" y="176">evaluator</text>
+          <text class="dp" x="50" y="195">spring-expression only</text>
+        </g>
+        <g class="dnode">
+          <rect x="345" y="150" width="270" height="62" rx="11"/>
+          <text class="nm" x="365" y="176">metering</text>
+          <text class="dp" x="365" y="195">jackson-databind only</text>
+        </g>
+        <g class="dnode">
+          <rect x="660" y="150" width="270" height="62" rx="11"/>
+          <text class="nm" x="680" y="176">persistence</text>
+          <text class="dp" x="680" y="195">spring-jdbc · spring-tx · flyway</text>
+        </g>
+
+        <!-- tier C: core -->
+        <g class="dnode hi">
+          <rect x="250" y="300" width="460" height="74" rx="11"/>
+          <text class="nm" x="272" y="328">pricing-engine-core</text>
+          <text class="dp" x="272" y="348">zero runtime dependencies</text>
+          <text class="dp" x="272" y="364">12,919 lines · 20 SPI seams · Money · Invoice · Wallet · Subscription</text>
+        </g>
+
+        <!-- arrows -->
+        <path class="darrow" d="M400 80 L165 148" marker-end="url(#ah)"/>
+        <path class="darrow" d="M480 80 L480 148" marker-end="url(#ah)"/>
+        <path class="darrow" d="M560 80 L795 148" marker-end="url(#ah)"/>
+        <path class="darrow" d="M165 212 L400 298" marker-end="url(#ah)"/>
+        <path class="darrow" d="M480 212 L480 298" marker-end="url(#ah)"/>
+        <path class="darrow" d="M795 212 L560 298" marker-end="url(#ah)"/>
+
+        <text class="dlabel" x="60" y="272">depends on</text>
+        <text class="dlabel" x="830" y="272">depends on</text>
+      </svg>
+    </div>
+
+    <div class="grid-7-5" style="margin-top:24px">
+      <div class="card">
+        <h3>Runtime dependencies, counted</h3>
+        <p style="font-size:13.5px;color:var(--muted);margin:6px 0 14px">Production scope only — test libraries excluded.</p>
+        <div class="bench"><span class="bench-label">core</span><div class="bench-track"><div class="bench-fill zero" style="width:4%"></div></div><span class="bench-val">0</span></div>
+        <div class="bench"><span class="bench-label">evaluator</span><div class="bench-track"><div class="bench-fill" style="width:9%"></div></div><span class="bench-val">1</span></div>
+        <div class="bench"><span class="bench-label">metering</span><div class="bench-track"><div class="bench-fill" style="width:9%"></div></div><span class="bench-val">1</span></div>
+        <div class="bench"><span class="bench-label">persistence</span><div class="bench-track"><div class="bench-fill" style="width:45%"></div></div><span class="bench-val">5</span></div>
+        <div class="bench"><span class="bench-label">starter</span><div class="bench-track"><div class="bench-fill" style="width:100%"></div></div><span class="bench-val">6</span></div>
+        <p class="footnote">The dependency edge only ever points downward. No cycle exists in the reactor, so the build itself proves the boundary holds.</p>
+      </div>
+
+      <div class="card">
+        <h3>Why it matters</h3>
+        <ul class="ticks" style="margin-top:12px">
+          <li><b>Money logic is pure.</b> Every rate, tax, allocation and rounding decision is plain Java over <code>BigDecimal</code> — no database, no container, no framework context required to test it.</li>
+          <li><b>No version lock-in on the core.</b> A host can adopt the pricing engine without inheriting its Boot version, or use the core inside an existing app that already has its own.</li>
+          <li><b>Swapping infrastructure is a bean, not a fork.</b> 19 in-memory implementations and 17 JDBC implementations sit behind the same interfaces.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SEAMS -->
+  <section>
+    <div class="eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="9"/></svg>
+      Extension points
+    </div>
+    <h2>Twenty-six seams, one rule</h2>
+    <p class="lede">Every external dependency is an interface in <code>core</code> or <code>metering</code>. The library never reaches for a global, a static, or a concrete infrastructure type. That is the whole integration story.</p>
+
+    <div class="grid-7-5" style="margin-top:26px">
+      <div class="card tight" style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Seam</th><th>Why the host supplies it</th><th>Owner</th></tr></thead>
+          <tbody>
+            <tr><td>TenantResolver</td><td>Identity. The library never reads a header, session or token.</td><td><span class="pill host">host</span></td></tr>
+            <tr><td>PaymentProcessor</td><td>Card, ACH, SEPA, boleto rails. Gated — no bean, no endpoint.</td><td><span class="pill host">host</span></td></tr>
+            <tr><td>MarketplaceMeterClient</td><td>AWS / Azure / GCP submission transport.</td><td><span class="pill host">host</span></td></tr>
+            <tr><td>RetentionActions</td><td>Whatever actually deletes, erases or notifies.</td><td><span class="pill host">host</span></td></tr>
+            <tr><td>TaxProvider</td><td>Avalara, Vertex, or the built-in rule engine.</td><td><span class="pill lib">default</span></td></tr>
+            <tr><td>RateCardRepository</td><td>Storage. In-memory and JDBC impls ship.</td><td><span class="pill lib">default</span></td></tr>
+            <tr><td>InvoiceRepository</td><td>Storage for the invoice aggregate.</td><td><span class="pill lib">default</span></td></tr>
+            <tr><td>SequenceAllocator</td><td>Gapless invoice numbers. Two impls, one contract.</td><td><span class="pill lib">default</span></td></tr>
+            <tr><td>IdempotencyKeyStore</td><td>IETF draft semantics: 4 outcomes, tenant-scoped.</td><td><span class="pill lib">default</span></td></tr>
+            <tr><td>AuditSink</td><td>Where the pricing ledger is written.</td><td><span class="pill lib">default</span></td></tr>
+            <tr><td>OutboxRepository</td><td>Transactional outbox. Write side only — see below.</td><td><span class="pill lib">default</span></td></tr>
+            <tr><td>FxRateCache</td><td>Purpose-typed, non-generic. No erasure ambiguity.</td><td><span class="pill lib">default</span></td></tr>
+          </tbody>
+        </table>
+        <p class="footnote">20 further seams span repositories, stores, locks and evaluators. Every one has an in-memory and a JDBC implementation in-tree.</p>
+      </div>
+
+      <div class="card">
+        <h3>The rule that decides everything</h3>
+        <p style="margin-top:10px;font-size:14px">Ask of any capability: <i>does a <b>library</b> owe this, or does a service?</i></p>
+        <ul class="ticks" style="margin-top:16px">
+          <li><b>The library owns</b> billing facts and billing decisions — metering, rating, audit, the payment state machine, the dunning ladder, tax computation, gapless numbering, append-only ledgers.</li>
+          <li><b>The host owns</b> identity, the three timers, message transport, and live credentials.</li>
+        </ul>
+        <p style="font-size:13.5px;color:var(--muted);margin-top:14px">A library that opened its own threads or scheduled its own polls would be starting work it does not own. So it does not — and the docs say so rather than implying otherwise.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- GUARANTEES -->
+  <section>
+    <div class="eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      Money correctness
+    </div>
+    <h2>The guarantees, and the bugs behind them</h2>
+    <p class="lede">Each of these was a real defect found by writing the failing test first, not a design intent stated up front.</p>
+
+    <div class="grid2" style="margin-top:26px">
+      <div class="card">
+        <h3>Allocation never loses a penny</h3>
+        <p style="font-size:14px;margin-top:8px">Hamilton–Hare largest-remainder splits the remainder across line items so the parts always sum to the whole. Rounding is <code>HALF_EVEN</code> throughout, and <code>BigDecimal</code> never degrades to <code>double</code> on the rating path.</p>
+      </div>
+      <div class="card">
+        <h3>Wallets cannot be overdrawn or double-spent</h3>
+        <p style="font-size:14px;margin-top:8px">The ledger is append-only and enforced by database triggers, not convention. Corrections are reversals — never edits. A drawdown is atomic, and cross-currency spend is refused outright.</p>
+      </div>
+      <div class="card">
+        <h3>Invoice numbers are gapless and unique</h3>
+        <p style="font-size:14px;margin-top:8px">Allocated at finalization inside a transaction, using <code>SELECT … FOR UPDATE</code>. The first concurrency test exposed that autocommit released the row lock before the update — 16 threads produced 4 distinct numbers. Fixed with an explicit transaction.</p>
+      </div>
+      <div class="card">
+        <h3>Two tenants can never share a series</h3>
+        <p style="font-size:14px;margin-top:8px">The in-memory allocator originally keyed by string concatenation with a separator. A control character in a tenant or customer id could forge another tenant's key and hand out its invoice number. Now keyed structurally — and mutation-tested to prove it.</p>
+      </div>
+    </div>
+
+    <div class="note plain" style="margin-top:22px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      <div><b>Tenant isolation is structural, not per-query diligence.</b> Every repository query is keyed on <code>tenant_id</code> at the interface boundary, so a caller cannot construct an unscoped lookup. One audit lookup was the exception — a single-item read that omitted the predicate because the id happened to be a primary key. It now takes the tenant explicitly, like every sibling query.</div>
+    </div>
+  </section>
+
+  <!-- OUTBOX -->
+  <section>
+    <div class="eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2H11l-2 2H2v18h20V2z"/><path d="m9 14 2 2 4-4"/></svg>
+      The outbox, stated honestly
+    </div>
+    <h2>What is guaranteed, and what is not</h2>
+
+    <div class="grid2" style="margin-top:26px">
+      <div class="card" style="border-left:3px solid var(--primary)">
+        <h3 style="color:var(--primary)">Guaranteed by the library</h3>
+        <ul class="ticks" style="margin-top:14px">
+          <li>The event row is written <b>in the same transaction</b> as the state change it describes.</li>
+          <li>Once that transaction commits, the event <b>cannot be lost from the database</b>.</li>
+          <li>Undelivered events are retrievable by topic for operator replay.</li>
+          <li>Attempts are never deleted — a failure is evidence, not garbage.</li>
+        </ul>
+      </div>
+      <div class="card" style="border-left:3px solid var(--warn)">
+        <h3 style="color:var(--warn)">Left to your host</h3>
+        <ul class="ticks cross" style="margin-top:14px">
+          <li>Polling <code>findDue</code> and publishing to a broker — <b>no dispatcher is started</b>.</li>
+          <li>Writing outcomes back via <code>recordDelivery</code>.</li>
+          <li>Retry budget, dead-lettering, and alerting on exhaustion.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="note warn" style="margin-top:22px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <div><b>The documentation was corrected to match.</b> It previously claimed a committed change "can never go unannounced." That is not true, and it is not true <i>by design</i> — an event that exhausts its retries sits in the table, and only a dispatcher would have told anyone. The wording now says what is actually true: a committed event cannot be lost from the database. Wiring a dispatcher is a deliberate host decision, and the docs now say that instead of implying the work is already done.</div>
+    </div>
+  </section>
+
+  <!-- EVIDENCE -->
+  <section>
+    <div class="eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+      Evidence
+    </div>
+    <h2>What the test suite proves</h2>
+
+    <div class="grid-7-5" style="margin-top:26px">
+      <div class="card">
+        <h3>735 tests, 0 failures</h3>
+        <p style="font-size:13.5px;color:var(--muted);margin:6px 0 16px">Distribution across the five reactor modules.</p>
+        <div class="bench"><span class="bench-label">core</span><div class="bench-track"><div class="bench-fill" style="width:100%"></div></div><span class="bench-val">336</span></div>
+        <div class="bench"><span class="bench-label">starter</span><div class="bench-track"><div class="bench-fill" style="width:49%"></div></div><span class="bench-val">165</span></div>
+        <div class="bench"><span class="bench-label">persistence</span><div class="bench-track"><div class="bench-fill" style="width:34%"></div></div><span class="bench-val">113</span></div>
+        <div class="bench"><span class="bench-label">metering</span><div class="bench-track"><div class="bench-fill" style="width:21%"></div></div><span class="bench-val">71</span></div>
+        <div class="bench"><span class="bench-label">evaluator</span><div class="bench-track"><div class="bench-fill" style="width:15%"></div></div><span class="bench-val">50</span></div>
+        <p class="footnote">17,589 lines of test code against 24,834 lines of production code. Tests are roughly 0.7× the size of the thing they test.</p>
+      </div>
+
+      <div class="card">
+        <h3>Not just green — earned</h3>
+        <p style="font-size:13.5px;color:var(--muted);margin:6px 0 14px">Regressions are pinned by the test that first exposed them.</p>
+        <ol class="timeline">
+          <li><strong>Renewals silently vanished</strong><p>Event ids were built from a constant sequence number, so every renewal after the first collided with one already in the outbox — identical payload, silently dropped.</p></li>
+          <li><strong>Duplicate invoice numbers</strong><p>A row lock released before the counter update. The concurrency test reported 16 threads producing 4 distinct numbers.</p></li>
+          <li><strong>Cross-tenant series collision</strong><p>A separator-based composite key could be forged. Verified by reverting the fix and watching the test fail with <code>expected: 1L but was: 2L</code>.</p></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIMITS -->
+  <section>
+    <div class="eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      Current limits
+    </div>
+    <h2>What it does not do yet</h2>
+    <p class="lede">Stated plainly, because a gap discovered during integration costs far more than one disclosed up front.</p>
+
+    <div class="grid2" style="margin-top:26px">
+      <div class="card">
+        <h3>Absent by design</h3>
+        <ul class="ticks cross" style="margin-top:14px">
+          <li><b>Outbox delivery.</b> Write side complete; the poll-and-publish loop is the host's.</li>
+          <li><b>Marketplace provider adapters.</b> Record shape and response interpretation are done; the HTTP call is transport, so it belongs to the host. Worth separate optional modules if ever needed.</li>
+          <li><b>Authentication and RBAC.</b> <code>TenantResolver</code> is the seam. Identity is not a library's business.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Genuinely open</h3>
+        <ul class="ticks" style="margin-top:14px">
+          <li><b>Rate limiting and quotas.</b> No 429 path, no per-tenant ceiling. The parity report marks this <b>PARTIAL</b>, not parity.</li>
+          <li><b>Load shedding and SLO reporting.</b> No p99 instrumentation, no correctness SLI, no backoff. Also marked <b>PARTIAL</b>.</li>
+          <li><b>Identifier validation.</b> <code>TenantId</code> and <code>CustomerId</code> reject only null and blank. Harmless now that keying is structural; still worth tightening deliberately.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="note plain" style="margin-top:22px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      <div><b>The verification posture is the thing to inherit.</b> Structural guards assert that every starter service is reachable as a bean and that no declared capability is left unused — so a class that compiles, is covered by tests, and cannot be obtained by any application fails the build rather than shipping silently.</div>
+    </div>
+  </section>
+
+  <footer style="margin-top:80px;padding-top:22px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;font-size:12.5px;color:var(--muted)">
+    <span>Aequitas — enterprise pricing, metering &amp; rating engine</span>
+    <span class="mono">main @ 56301a2 · 735/735 green</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -42,6 +42,18 @@
         -->
         <h2.version>2.3.232</h2.version>
         <!--
+          Tests carrying this JUnit tag are excluded from the ordinary build. They run for minutes
+          and measure the machine as much as the code, so a shared CI box would turn a throughput
+          number into noise. They are not excluded because they matter less - they are run
+          deliberately, on quiet hardware, by clearing the property:
+
+              mvn test -Dtest=PricingEngineLoadTest -Dsurefire.excludedGroups=
+
+          The correctness assertions inside those classes still matter; what is withheld by default
+          is the timing measurement, not the invariant.
+        -->
+        <surefire.excludedGroups>load</surefire.excludedGroups>
+        <!--
           Testcontainers BOM. Imported explicitly because Maven does not resolve a BOM imported by
           an imported BOM, so the testcontainers-bom nested inside spring-boot-dependencies has no
           effect on this project's dependencyManagement. Pinned to the version the Boot 4 BOM
@@ -133,6 +145,13 @@
             </plugins>
         </pluginManagement>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${surefire.excludedGroups}</excludedGroups>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
