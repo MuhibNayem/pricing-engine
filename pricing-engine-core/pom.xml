@@ -28,5 +28,67 @@
             <artifactId>assertj-core</artifactId>
             <scope>test</scope>
         </dependency>
+        <!--
+          Property-based testing. Hand-written examples only ever cover the inputs their author
+          imagined; jqwik generates them - including the negative, the zero-scale, the
+          single-minor-unit and the astronomically large ones - and checks a stated property
+          against each. For a money engine that is the difference between testing 20 amounts and
+          testing 1,000 of them without deciding which 20 mattered. TEST SCOPE ONLY: this must
+          never reach a published artifact.
+        -->
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <version>${jqwik.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              Declared but deliberately NOT bound to a phase. Invoked on purpose:
+
+                  mvn -pl pricing-engine-core pitest:mutationCoverage
+
+              Coverage tells you a line executed. Mutation tells you whether executing it would
+              have mattered - whether the test would have failed if the line were wrong. For a
+              billing engine the second question is the one that counts, and it is the one a
+              green build cannot answer.
+            -->
+            <plugin>
+                <groupId>org.pitest</groupId>
+                <artifactId>pitest-maven</artifactId>
+                <version>${pitest.version}</version>
+                <configuration>
+                    <targetClasses>
+                        <param>com.saas.pricing.core.engine.RemainderAllocator*</param>
+                        <param>com.saas.pricing.core.model.Money</param>
+                        <param>com.saas.pricing.core.spi.impl.InMemorySequenceAllocator</param>
+                    </targetClasses>
+                    <targetTests>
+                        <param>com.saas.pricing.core.engine.*</param>
+                        <param>com.saas.pricing.core.model.*</param>
+                        <param>com.saas.pricing.core.spi.*</param>
+                    </targetTests>
+                    <mutators>
+                        <mutator>STRONGER</mutator>
+                    </mutators>
+                    <outputFormats>
+                        <outputFormat>HTML</outputFormat>
+                        <outputFormat>XML</outputFormat>
+                    </outputFormats>
+                </configuration>
+                <dependencies>
+                    <!-- PIT ships engine plugins per test library; without this one it cannot
+                         discover or execute JUnit 5 (and jqwik, which runs on the same platform). -->
+                    <dependency>
+                        <groupId>org.pitest</groupId>
+                        <artifactId>pitest-junit5-plugin</artifactId>
+                        <version>${pitest.junit5.version}</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+        </plugins>
+    </build>
 </project>

@@ -54,6 +54,22 @@
         -->
         <surefire.excludedGroups>load</surefire.excludedGroups>
         <!--
+          Property-based testing. Generates the corner cases a hand-written example set never
+          thought to include. See pricing-engine-core/pom.xml for why this engine needs it.
+        -->
+        <jqwik.version>1.10.1</jqwik.version>
+        <!--
+          Mutation testing. Answers a question coverage cannot: would these tests actually FAIL if
+          the code were wrong? PIT mutates production bytecode (>= becomes >, a null check is
+          deleted, a rounding mode is swapped) and reports every mutant the suite did not kill. A
+          surviving mutant is a claim the test suite is making and not honouring. Not bound to the
+          build: it is slow, and a number measured on a busy machine is not a gate. Run it
+          deliberately - see the profile in docs/RESILIENCE_TESTING.md.
+        -->
+        <pitest.version>1.30.0</pitest.version>
+        <!-- The JUnit 5 engine plugin is versioned independently of the PIT core. -->
+        <pitest.junit5.version>1.2.3</pitest.junit5.version>
+        <!--
           Testcontainers BOM. Imported explicitly because Maven does not resolve a BOM imported by
           an imported BOM, so the testcontainers-bom nested inside spring-boot-dependencies has no
           effect on this project's dependencyManagement. Pinned to the version the Boot 4 BOM
