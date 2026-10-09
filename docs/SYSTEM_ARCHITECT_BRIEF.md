@@ -112,13 +112,23 @@ Stated before you find them.
 
 | Gap | Actual impact | Status |
 |---|---|---|
-| Two in-memory stores sweep expired entries in O(n) per operation | ~2,300 claims/sec ceiling at the 100k default cap, degrading rather than plateauing. **Single-node only** — the JDBC stores have no such limit. | Documented. Fix scoped: read-time expiry + bounded sweep. |
-| No network fault injection | Database faults are tested against real PostgreSQL; we do not yet sever a live TCP connection mid-request (Toxiproxy is the intended tool). | Not started. |
-| No rate limiting or load shedding | Deliberately a gateway concern. The parity report marks this `PARTIAL`. | By design. |
+| No p99/p99.9 reporting or correctness SLI | Latency is measured in the test suites, but there is no production SLO surface. Metrics exist and carry bounded cardinality. | Open. Reporting layer is yours. |
+| No SLO alert definitions or on-call runbook | Nothing here pages you. | Open, and correctly so — an SLO is a property of your deployment, not of a library. |
 | Outbox delivery | The outbox guarantees a **committed event cannot be lost from the database**. Publishing it is your dispatcher's job. | By design — but hear it now rather than assume "transactional outbox" implies we run the loop. |
+| No SBOM | Supply-chain attestations are not generated. | Open. |
 
-The O(n) sweep is the only one that is a genuine performance ceiling rather than a boundary. It is
-documented rather than hidden, and it does not affect clustered deployments.
+Three items previously listed here are now closed:
+
+- **The O(n) expiry sweep is fixed.** Both in-memory stores now evaluate expiry at read time and
+  reclaim on a capped write-order sweep. Measured at the 100,000-entry cap: `claim()` went from
+  **434 µs to 0.1 µs** and the curve is flat rather than linear.
+- **Network fault injection is in place.** `NetworkFaultChaosTest` routes JDBC through Toxiproxy
+  and severs the connection mid-transaction, so we can show what a client experiences when the
+  network breaks — not only what the server does when a backend dies.
+- **Rate limiting and load shedding are in place.** Per-tenant token bucket plus an in-flight
+  ceiling, mapped to 429 (your quota) and 503 (we are saturated), both with `Retry-After`.
+
+None of the three added a mandatory dependency.
 
 ---
 

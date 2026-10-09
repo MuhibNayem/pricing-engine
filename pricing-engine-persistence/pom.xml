@@ -83,6 +83,16 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!--
+            Network fault injection. PostgresTransactionChaosTest kills a backend from inside the
+            server; this severs the TCP connection from outside, which is the failure a client
+            actually experiences and the one a backend-side kill cannot reproduce.
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>toxiproxy</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>

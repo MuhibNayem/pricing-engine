@@ -135,79 +135,102 @@ cap=5,000 per store
 - A hot key hammered by 8 threads × 500 attempts is classified exactly once per attempt —
   `CLAIMED`/`DUPLICATE`/`CONFLICT` — with no attempt falling into two buckets or none.
 
-### Finding: every operation pays an O(n) sweep, under a global lock
+### Resolved: every operation paid an O(n) sweep, under a global lock
 
-This is worse than "memory is reclaimed lazily", and the first version of this document said so too
-mildly. Measured on this machine — mean cost of one `claim()` and one `isDuplicate()` against a
-store pre-loaded to the given size:
+This section records a finding that has since been **fixed**, because the measurement is the whole
+reason to trust the fix. Mean cost of one `claim()` and one `isDuplicate()` against a store
+pre-loaded to the given size:
 
 ```
-preloaded     claim()      isDuplicate()
-    100          5.0 us          1.7 us
-  1,000          4.5 us          4.3 us
- 10,000         47.5 us         51.0 us
- 50,000        234.5 us        226.7 us
-100,000        434.2 us        436.6 us
+                            before                    after
+preloaded     claim()      isDuplicate()     claim()      isDuplicate()
+    100          5.0 us          1.7 us        0.2 us          0.1 us
+  1,000          4.5 us          4.3 us        0.2 us          0.0 us
+ 10,000         47.5 us         51.0 us        0.2 us          0.0 us
+ 50,000        234.5 us        226.7 us        0.1 us          0.0 us
+100,000        434.2 us        436.6 us        0.1 us          0.0 us
 ```
 
-Linear in the number of live entries, and it happens on **every** call:
+Before: linear in the number of live entries, on **every** call — `InMemoryIdempotencyStore`
+swept inside `synchronized (seenKeys)` on `claim()` and `isDuplicate()`, and
+`InMemoryRatingClaimStore` swept on `find()`, `record()`, `compareAndSet()` and `remove()`. The
+theoretical ceiling was roughly **2,300 claims per second, globally**, degrading rather than
+plateauing.
 
-- `InMemoryIdempotencyStore.purgeExpired` runs inside `synchronized (seenKeys)` on `claim()` and
-  `isDuplicate()`.
-- `InMemoryRatingClaimStore.purgeExpired` runs on `find()`, `record()`, `compareAndSet()` and
-  `remove()` — every method on the interface.
+The fix had two separable halves, and the order mattered:
 
-So the entry cap does not merely bound memory. It converts the problem into a throughput cliff: at
-the default `DEFAULT_MAX_ENTRIES` of 100,000, a single `claim()` costs ~434 us while holding a
-monitor that serialises every other ingestion thread in the process. The theoretical ceiling is
-roughly **2,300 claims per second, globally**, falling linearly from there. The HTTP load profile
-above reported 3,789 req/s against a nearly empty store; ingestion becomes the bottleneck well
-before the cap, and degrades rather than plateauing.
+1. **Expiry moved to the read path.** Both stores had no per-entry check — map membership *was*
+   the expiry verdict — so the exact, complete sweep was load-bearing for correctness, not just
+   memory. Amortising it alone would have made an expired key answer `DUPLICATE`.
+2. **Reclamation became bounded work** on a write-order queue: at most `SWEEP_BUDGET` nodes per
+   pass, at most once per `SWEEP_EVERY_OPERATIONS` operations, widening near the entry cap.
 
-Why it is not fixed here: three fixes are possible and all three are decisions, not obvious
-repairs.
+Part 2 is only sound because of part 1. The queue cannot assume monotonic record order — record
+time is the caller's `eventTime` and metering ingests late events — so the sweep examines its
+budget and takes whatever is due rather than stopping at the first live node.
 
-1. **Amortise the sweep** — purge at most every K operations, or bound the scan to a slice per
-   call. Cheap, stays in-process, and caps latency at O(n/K) rather than O(n).
-2. **Bucket by time** — index entries into per-hour buckets so expiry is O(1) to test and a whole
-   bucket drops at once. Best asymptotics, most code.
-3. **Background sweeper** — a scheduled thread. The obvious answer, and the one the library must
-   not take: it would mean the store starting threads it does not own, which is the same boundary
-   that keeps auth, scheduling and transport host-side.
+This is the fixed-expiration structure Caffeine uses for `expireAfterWrite` (a write-order deque;
+its timer wheel is reserved for the *variable* `expireAfter(Expiry)` policy a fixed TTL does not
+use), and Redis's shape: bounded work per cycle rather than a full pass.
 
-Option 1 or 2 is the recommendation; both keep the store passive. Until then, size
-`DEFAULT_MAX_ENTRIES` for the per-operation cost rather than for memory — the current default of
-100,000 costs ~434 us per claim.
+The **background sweeper** — option 3 of the three originally listed — remains deliberately
+rejected. It would mean the store starting threads it does not own, which is the same boundary
+that keeps auth, scheduling and transport host-side. `purgeExpired()` is public instead, so a host
+with its own scheduler can drive it.
+
+`InMemoryStoreExpiryTest` (13 tests) pins the invariant that licenses the bounded sweep: expiry
+stays exact past one full sweep budget, backdated events expire on schedule, repeated overwrites
+compact rather than leaking the queue, and per-operation cost does not scale with entry count.
 
 ## What this does NOT prove
 
 Stated plainly, because this is the part that gets skipped in a status update.
 
-1. **No network-level chaos.** Nothing here partitions a connection, adds 500ms of latency,
-   corrupts a TCP stream, or makes a DNS lookup fail. Those are the failures that actually reach
-   production, and a repository that throws `RuntimeException` is a polite subset of them.
+1. **Network chaos covers the transport, but only two fault shapes.** `NetworkFaultChaosTest`
+   severs the connection and adds downstream latency. It does **not** corrupt a TCP stream, drop
+   packets mid-message, fail a DNS lookup, or test a half-open connection — a proxy cutting cleanly
+   is tidier than a network that misbehaves, and a repository that surfaces a socket error is a
+   polite subset of what reaches production.
 
-2. **Clock injection stops at the store.** The soak advances a `Clock` the stores were handed. It
+2. **No deadline-enforcement test.** The latency case proves the injected delay is *observable*,
+   not that anything *acts* on it. Whether a hung database trips a caller in bounded time depends
+   on your pool configuration, the driver's `socketTimeout`, and the gateway's timeouts — none of
+   which this library owns or configures. That is a deliberate boundary and it is also a real gap in
+   what has been verified.
+
+3. **Clock injection stops at the store.** The soak advances a `Clock` the stores were handed. It
    says nothing about NTP drift, a leap second, or a clock that jumps backwards on the host, and
    nothing about connection-pool exhaustion or file-descriptor leaks, which need hours of real
    elapsed time rather than simulated time.
 
-3. **No clock or randomness injection at the system level.** Tests choose their instants. A real
+4. **No clock or randomness injection at the system level.** Tests choose their instants. A real
    cluster has NTP drift, a leap second, and a clock that jumps backwards — untested.
 
-4. **Chaos testing finds the failures you thought of.** These tests encode failure modes someone
+5. **Chaos testing finds the failures you thought of.** These tests encode failure modes someone
    already reasoned about. They are strong evidence against *those* modes and almost no evidence
    about the one nobody has imagined yet. That is the honest ceiling of this technique, and the
    reason production history is still the only real proof.
 
 ## Recommended order of work
 
-1. Network fault injection — a proxy that can sever and delay connections — which would extend the
-   database chaos up through the transport layer. Toxiproxy is the usual choice. The stores are explicitly TTL-bounded and that bounding has never been
-   observed happening.
-2. Network fault injection — a proxy that can sever and delay connections — which would extend the
-   database chaos above up through the transport layer. Toxiproxy is the usual choice.
-3. A rate limiter. `C5` in the parity report is still PARTIAL, and no amount of load testing makes
-   an engine that has never been load-shed safe under overload.
+The three items that used to head this list are now done:
+
+1. ~~Network fault injection~~ — `NetworkFaultChaosTest` routes JDBC through Toxiproxy and severs
+   the connection mid-transaction, adds downstream latency, and confirms both recovery and the
+   absence of a partial row.
+2. ~~Network fault injection~~ — same suite; the duplicate entry is removed.
+3. ~~A rate limiter~~ — `AdmissionController` with a per-tenant token bucket and a concurrency
+   ceiling, mapped to 429/503 with `Retry-After`.
+
+What remains open:
+
+1. **Distributed rate limiting.** `TokenBucketAdmissionController` is per-process. Behind N load
+   balancers the effective per-tenant rate is N times the configured one. The SPI is the seam —
+   a Redis- or Postgres-backed implementation is a host decision — but the reference
+   implementation is single-node, and the documentation says so.
+2. **Adaptive load shedding.** The ceiling is a configured constant, not a function of measured
+   latency or queue depth. Netflix's `concurrency-limits` and an adaptive limit would track
+   saturation rather than assume it.
+3. **SBOM and supply-chain attestation.**
 
 None of the three changes production code. All three change what we can honestly claim.
