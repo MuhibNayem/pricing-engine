@@ -9,6 +9,7 @@ gap between them is where incidents live. Read this before quoting the test coun
 |---|---|---|---|
 | Unit + integration | all modules | yes | Behaviour under a single thread, against H2 and Testcontainers |
 | **Chaos** | `InvoiceFinalizationChaosTest`, `OutboxChaosTest` | **yes** | Behaviour when a step fails, is duplicated, or arrives late |
+| **DB chaos** | `PostgresTransactionChaosTest` | **yes, when Docker is present** | Behaviour when a real transaction dies |
 | **Load** | `PricingEngineLoadTest` | **no** — tagged `load` | Throughput and latency distribution under concurrency |
 
 Load tests are excluded from the ordinary build by default and run deliberately:
@@ -68,42 +69,60 @@ Delivery is host-owned and goes wrong routinely. The record must stay trustworth
 - An exhausted event stops consuming delivery budget and stays visible to an operator.
 - 64 threads concurrently announcing the same change yield exactly one event.
 
+### Real PostgreSQL transactions (`PostgresTransactionChaosTest`, 6 tests)
+
+Runs against a real `postgres:17-alpine` container. This is the layer a repository mock cannot
+reach: a mock throws where the *code* decides to throw, a real server throws where the *engine*
+decides to.
+
+- An exception thrown after two writes discards both.
+- A constraint violation late in a transaction discards the earlier, individually-valid write —
+  a reader never sees one invoice sharing a number with another.
+- **A backend killed mid-transaction** via `pg_terminate_backend` while the transaction is open
+  and dirty leaves nothing behind.
+- `SERIALIZABLE` isolation surfaces a genuine conflict (*"could not serialize access due to
+  concurrent update"*, SQLSTATE 40001) instead of silently losing an update.
+- A deadlock kills **exactly one** transaction; the survivor commits.
+- 32 threads allocating from one series under real `SELECT … FOR UPDATE` row locks produce 32
+  distinct, gapless numbers.
+
+These skip themselves when Docker is unavailable (`disabledWithoutDocker = true`) rather than
+reporting a pass they did not earn. Check the build log: a CI box without Docker runs strictly
+fewer assertions than your laptop, and that difference should be visible, not silent.
+
 ## What this does NOT prove
 
 Stated plainly, because this is the part that gets skipped in a status update.
 
-1. **No real-transaction rollback on PostgreSQL.** The chaos suite injects failures at the
-   repository interface. It does not kill a live PostgreSQL connection mid-transaction, nor test
-   `SERIALIZABLE` retry under genuine contention. `PostgresMigrationTest` covers the schema; the
-   rollback *behaviour* is not yet covered. This is the highest-value gap in the list.
-
-2. **No network-level chaos.** Nothing here partitions a connection, adds 500ms of latency,
+1. **No network-level chaos.** Nothing here partitions a connection, adds 500ms of latency,
    corrupts a TCP stream, or makes a DNS lookup fail. Those are the failures that actually reach
    production, and a repository that throws `RuntimeException` is a polite subset of them.
 
-3. **No HTTP load test.** The repository contains no runnable application — it is a library, so
+2. **No HTTP load test.** The repository contains no runnable application — it is a library, so
    there is no server to drive. Measuring HTTP would mean building a host harness, and the number
    would describe the host's transport, not the engine. The host needs its own load test against
    *this* library, with its own SLO. If you want one here, it needs a harness module first.
 
-4. **No soak.** Every test here completes in seconds. Memory growth, connection-pool exhaustion,
+3. **No soak.** Every test here completes in seconds. Memory growth, connection-pool exhaustion,
    cache unboundedness and file-descriptor leaks only appear over hours or days. The idempotency
    stores are explicitly TTL-bounded; that bounding has never been observed over a real TTL.
 
-5. **No clock or randomness injection at the system level.** Tests choose their instants. A real
+4. **No clock or randomness injection at the system level.** Tests choose their instants. A real
    cluster has NTP drift, a leap second, and a clock that jumps backwards — untested.
 
-6. **Chaos testing finds the failures you thought of.** These tests encode failure modes someone
+5. **Chaos testing finds the failures you thought of.** These tests encode failure modes someone
    already reasoned about. They are strong evidence against *those* modes and almost no evidence
    about the one nobody has imagined yet. That is the honest ceiling of this technique, and the
    reason production history is still the only real proof.
 
 ## Recommended order of work
 
-1. PostgreSQL transaction rollback under Testcontainers — closes gap 1, the largest.
-2. A host harness module, then a k6 load test against it — closes gap 3, and gives the host a
-   reproducible number.
-3. A soak profile: run the idempotency and rating-claim stores past their TTL and assert they
-   actually shrink — closes gap 4.
+1. A host harness module, then a k6 load test against it — gives the host a reproducible number
+   and closes the largest remaining gap.
+2. A soak profile: run the idempotency and rating-claim stores past their TTL and assert they
+   actually shrink. The stores are explicitly TTL-bounded and that bounding has never been
+   observed happening.
+3. Network fault injection — a proxy that can sever and delay connections — which would extend the
+   database chaos above up through the transport layer.
 
 None of the three changes production code. All three change what we can honestly claim.
