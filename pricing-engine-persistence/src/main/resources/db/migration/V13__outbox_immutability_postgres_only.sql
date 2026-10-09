@@ -7,33 +7,33 @@
 -- rewriting an event after the fact would mean a subscriber's history no longer
 -- matches what they were actually told.
 --
--- PostgreSQL-only (CREATE RULE / plpgsql), so it is excluded from the H2 test
--- fixture - see BaseJdbcRepositoryTest.
+-- PostgreSQL-only (plpgsql triggers), so it is excluded from the H2 test fixture -
+-- see BaseJdbcRepositoryTest. Verified against a real PostgreSQL by
+-- PostgresMigrationTest.
+--
+-- DELETE raises rather than being silently ignored: a rule that does nothing
+-- makes a deletion look like it succeeded. An undelivered event that will never
+-- be delivered is precisely what an operator needs to find; write it off by
+-- marking it delivered with an error instead.
 -- ==============================================================================
 
-DO $$
+DROP RULE IF EXISTS outbox_events_no_delete ON outbox_events;
+
+CREATE OR REPLACE FUNCTION outbox_events_reject_delete() RETURNS trigger AS $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_rules
-        WHERE schemaname = current_schema() AND tablename = 'outbox_events'
-    ) THEN
+    RAISE EXCEPTION
+        'outbox_events is append-only: DELETE is rejected; mark the event delivered with an error instead';
+END;
+$$ LANGUAGE plpgsql;
 
-        -- No DELETE at all: an undelivered event that will never be delivered is precisely what
-        -- an operator needs to find, so removing it would hide a committed change nobody was told
-        -- about. Write off by marking it delivered with an error instead.
-        CREATE RULE outbox_events_no_delete AS
-            ON DELETE TO outbox_events
-            DO INSTEAD NOTHING;
+DROP TRIGGER IF EXISTS trg_outbox_events_no_delete ON outbox_events;
+CREATE TRIGGER trg_outbox_events_no_delete
+    BEFORE DELETE ON outbox_events
+    FOR EACH ROW EXECUTE FUNCTION outbox_events_reject_delete();
 
-    END IF;
-END
-$$;
-
--- The function and trigger are declared OUTSIDE the DO block on purpose. A dollar-quoted
--- plpgsql body cannot be nested inside another dollar-quoted DO block - the inner '$$'
--- terminates the outer block and the script is a syntax error. Keeping them here also means
--- the trigger is (re)installed unconditionally, so a partially applied earlier run cannot
--- leave the payload unguarded.
+-- The function and trigger are declared at the top level, never inside a dollar-quoted DO block:
+-- a plpgsql body cannot be nested inside another dollar-quoted block (the inner '$$' terminates
+-- the outer one), which made an earlier revision of this file a syntax error on PostgreSQL.
 CREATE OR REPLACE FUNCTION outbox_payload_immutable() RETURNS trigger AS $$
 BEGIN
     IF OLD.event_id     IS DISTINCT FROM NEW.event_id

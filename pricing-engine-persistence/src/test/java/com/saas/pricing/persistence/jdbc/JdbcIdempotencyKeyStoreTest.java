@@ -240,4 +240,21 @@ class JdbcIdempotencyKeyStoreTest extends BaseJdbcRepositoryTest {
             .as("ignoring the reclaim UPDATE count lets two racers both execute one expired key")
             .isEqualTo(1);
     }
+
+    @Test
+    @DisplayName("a nanosecond claim time still completes and replays after the round trip")
+    void nanosecondClaimTimeSurvivesTheRoundTrip() {
+        // Regression: complete() fences on recorded_at equality. Instant.now() carries nanoseconds
+        // while TIMESTAMP WITH TIME ZONE stores microseconds, so the stored row could never equal
+        // the in-memory claim and the key stayed IN_FLIGHT until its TTL, 409-ing every retry.
+        Instant withNanos = Instant.parse("2026-10-08T12:00:00.123456789Z");
+        String fp = fingerprint("{}");
+        var claim = store.decide(TENANT, KEY, fp, TTL, withNanos).claim();
+
+        store.complete(TENANT, claim, 201, "{\"invoiceId\":\"inv-nano\"}");
+
+        var retry = store.decide(TENANT, KEY, fp, TTL, withNanos.plusSeconds(1));
+        assertThat(retry.action()).isEqualTo(IdempotencyDecision.Action.REPLAY);
+        assertThat(retry.stored().responseBody()).contains("inv-nano");
+    }
 }

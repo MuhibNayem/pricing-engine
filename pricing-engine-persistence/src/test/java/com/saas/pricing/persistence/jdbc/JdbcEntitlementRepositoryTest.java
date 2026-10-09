@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class JdbcEntitlementRepositoryTest extends BaseJdbcRepositoryTest {
 
@@ -86,5 +87,33 @@ class JdbcEntitlementRepositoryTest extends BaseJdbcRepositoryTest {
         Optional<CustomerEntitlement> found = repository.findEntitlement(tenantId, customerId, "SSO_LOGIN", to);
         assertThat(found).isPresent();
         assertThat(found.get().entitlementId()).isEqualTo("ent_bound");
+    }
+
+    @Test
+    @DisplayName("usage for a missing entitlement is refused, not silently dropped")
+    void usageAgainstMissingEntitlementIsRefused() {
+        assertThatThrownBy(() -> repository.recordUsage(tenantId, customerId, "NEVER_GRANTED", BigDecimal.ONE))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("No entitlement found");
+    }
+
+    @Test
+    @DisplayName("a re-save keeps the row's id consistent with its payload")
+    void reSaveUpdatesTheEntitlementId() {
+        Instant now = Instant.parse("2026-10-08T00:00:00Z");
+        repository.saveEntitlement(CustomerEntitlement.metered(
+            "ent_old", tenantId, customerId, planCode, "EXPORT_REPORTS",
+            new BigDecimal("100"), BigDecimal.ZERO, true, now));
+
+        // A projection that re-keys the same feature must not leave the row's id column pointing at
+        // a different entitlement than the payload it stores.
+        repository.saveEntitlement(CustomerEntitlement.metered(
+            "ent_new", tenantId, customerId, planCode, "EXPORT_REPORTS",
+            new BigDecimal("200"), new BigDecimal("5"), true, now));
+
+        var stored = repository.findEntitlement(tenantId, customerId, "EXPORT_REPORTS", now.plusSeconds(1))
+            .orElseThrow();
+        assertThat(stored.entitlementId()).isEqualTo("ent_new");
+        assertThat(stored.quotaLimit()).contains(new BigDecimal("200"));
     }
 }

@@ -67,16 +67,36 @@ public class JdbcSubscriptionRepository implements SubscriptionRepository {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Optimistic locking on {@code version}. Every model transition advances the version by
+     * exactly one, so the row is updated only when it still holds the immediately preceding version:
+     * two workers that both read version N (a renewal sweep and a lifecycle call, or two retries of
+     * the same job) cannot both write - the loser gets a conflict and re-reads instead of silently
+     * overwriting the winner's transition and losing its outbox event.
+     */
     @Override
     @Transactional
     public void update(Subscription subscription) {
         Objects.requireNonNull(subscription, "subscription cannot be null");
+        if (find(subscription.tenantId(), subscription.subscriptionId()).isEmpty()) {
+            throw new IllegalStateException(
+                "Unknown subscription " + subscription.subscriptionId()
+                    + " for tenant " + subscription.tenantId().value());
+        }
+        long expectedPreviousVersion = subscription.version() - 1;
+        if (expectedPreviousVersion < 0) {
+            throw new IllegalStateException(
+                "A subscription update must advance the version; got version "
+                    + subscription.version() + " for " + subscription.subscriptionId());
+        }
         int updated = jdbcTemplate.update("""
             UPDATE subscriptions SET
                 plan_code = ?, status = ?, current_period_start = ?, current_period_end = ?,
                 trial_ends_at = ?, cancel_at_period_end = ?, canceled_at = ?, paused_at = ?,
                 version = ?, payload_json = ?, updated_at = ?
-            WHERE subscription_id = ? AND tenant_id = ?
+            WHERE subscription_id = ? AND tenant_id = ? AND version = ?
             """,
             subscription.planCode().value(), subscription.status().name(),
             Timestamp.from(subscription.currentPeriodStart()),
@@ -88,11 +108,14 @@ public class JdbcSubscriptionRepository implements SubscriptionRepository {
             subscription.version(),
             PricingJsonMapper.toJson(subscription),
             Timestamp.from(subscription.currentPeriodStart()),
-            subscription.subscriptionId(), subscription.tenantId().value());
+            subscription.subscriptionId(), subscription.tenantId().value(),
+            expectedPreviousVersion);
 
         if (updated == 0) {
             throw new IllegalStateException(
-                "Unknown subscription " + subscription.subscriptionId());
+                "Subscription " + subscription.subscriptionId() + " was modified concurrently or does"
+                    + " not exist for tenant " + subscription.tenantId().value()
+                    + " (expected version " + expectedPreviousVersion + ")");
         }
     }
 

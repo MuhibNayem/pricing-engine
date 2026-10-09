@@ -178,4 +178,30 @@ class JdbcSubscriptionRepositoryTest extends BaseJdbcRepositoryTest {
             "UPDATE subscriptions SET version = -1 WHERE subscription_id = ?", "sub-neg"))
             .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
+
+    /**
+     * The optimistic lock. Two writers that read the same version - a renewal sweep and a lifecycle
+     * call, or two retries of the same job - must not both write: the loser has to see a conflict
+     * and re-read, rather than silently overwriting the winner's transition and dropping its outbox
+     * event.
+     */
+    @Test
+    @DisplayName("a stale update loses the optimistic-lock race instead of overwriting")
+    void staleUpdateIsRejected() {
+        var repo = repository();
+        repo.create(active("sub-race"));
+        var base = repo.find(TENANT, "sub-race").orElseThrow();
+
+        var first = base.pause(Instant.parse("2026-10-16T00:00:00Z"));
+        var second = base.pause(Instant.parse("2026-10-17T00:00:00Z"));
+
+        repo.update(first);
+
+        assertThatThrownBy(() -> repo.update(second))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("concurrently");
+        assertThat(repo.find(TENANT, "sub-race").orElseThrow().version())
+            .as("the winner's transition stands and the loser changes nothing")
+            .isEqualTo(1);
+    }
 }

@@ -13,7 +13,7 @@
 -- rather than a second one.
 --
 -- Portable SQL only; append-only enforcement lives in V11 because H2 cannot
--- execute PostgreSQL rules.
+-- execute PostgreSQL triggers and plpgsql.
 -- ==============================================================================
 
 CREATE TABLE IF NOT EXISTS payment_attempts (
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS payment_attempts (
         REFERENCES invoices (invoice_id) ON DELETE RESTRICT,
 
     CONSTRAINT ck_payment_attempt_status
-        CHECK (status IN ('SUCCEEDED', 'FAILED_RETRYABLE', 'FAILED_TERMINAL')),
+        CHECK (status IN ('PENDING', 'SUCCEEDED', 'FAILED_RETRYABLE', 'FAILED_TERMINAL')),
 
     -- Attempt numbers are 1-based and unique per invoice; that pairing is what makes the derived
     -- attempt id unique without inventing a random one.
@@ -50,9 +50,12 @@ CREATE TABLE IF NOT EXISTS payment_attempts (
 
     CONSTRAINT ck_payment_attempt_amount CHECK (amount >= 0),
 
-    -- A failure must carry the processor's code; success must not schedule a further attempt.
+    -- A failure must carry the processor's code. PENDING and SUCCEEDED must not: an accepted
+    -- charge has not failed yet, so demanding a decline code for it is a schema/model mismatch
+    -- that would reject every pending attempt.
     CONSTRAINT ck_payment_attempt_failure_code
-        CHECK (status = 'SUCCEEDED' OR (failure_code IS NOT NULL AND LENGTH(TRIM(failure_code)) > 0)),
+        CHECK (status NOT IN ('FAILED_RETRYABLE', 'FAILED_TERMINAL')
+            OR (failure_code IS NOT NULL AND LENGTH(TRIM(failure_code)) > 0)),
 
     CONSTRAINT ck_payment_attempt_retry_scheduled
         CHECK (status <> 'FAILED_RETRYABLE' OR next_attempt_at IS NOT NULL),

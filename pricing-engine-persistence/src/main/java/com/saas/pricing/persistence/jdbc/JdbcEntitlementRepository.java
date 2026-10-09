@@ -99,12 +99,13 @@ public class JdbcEntitlementRepository implements EntitlementRepository {
 
         String updateSql = """
             UPDATE entitlements
-            SET current_usage = ?, quota_limit = ?, effective_from = ?, effective_to = ?, payload_json = ?
+            SET entitlement_id = ?, current_usage = ?, quota_limit = ?, effective_from = ?, effective_to = ?, payload_json = ?
             WHERE tenant_id = ? AND customer_id = ? AND feature_key = ?
             """;
 
         int updated = jdbcTemplate.update(
             updateSql,
+            entitlement.entitlementId(),
             entitlement.currentUsage(),
             entitlement.quotaLimit().orElse(null),
             effFrom,
@@ -157,6 +158,14 @@ public class JdbcEntitlementRepository implements EntitlementRepository {
             WHERE tenant_id = ? AND customer_id = ? AND feature_key = ?
             """;
 
-        jdbcTemplate.update(sql, usageDelta, tenantId.value(), customerId.value(), featureKey);
+        int updated = jdbcTemplate.update(sql, usageDelta, tenantId.value(), customerId.value(), featureKey);
+        if (updated == 0) {
+            // Silently dropping usage is a revenue leak: the verifier may already have allowed the
+            // request that produced it, and nothing would ever reconcile the missing increment.
+            throw new IllegalStateException(
+                "No entitlement found for " + tenantId.value() + "/" + customerId.value()
+                    + "/" + featureKey + "; usage of " + usageDelta.toPlainString()
+                    + " cannot be recorded against a row that does not exist");
+        }
     }
 }

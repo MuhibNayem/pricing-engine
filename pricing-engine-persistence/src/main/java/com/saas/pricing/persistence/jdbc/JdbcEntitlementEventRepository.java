@@ -7,7 +7,6 @@ import com.saas.pricing.core.model.entitlement.FeatureType;
 import com.saas.pricing.core.spi.EntitlementEventRepository;
 import com.saas.pricing.persistence.json.PricingJsonMapper;
 
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,33 +50,39 @@ public class JdbcEntitlementEventRepository implements EntitlementEventRepositor
      * <p>A redelivered identical event is silently skipped, which is what makes an at-least-once
      * transport safe to feed from. Re-using an id for different content still raises, because one
      * id must not be able to mean two different changes.
+     *
+     * <p>The collision is absorbed through a savepoint ({@link JdbcDuplicateGuard}); catching the
+     * duplicate-key exception and then reading the table only works on H2, because PostgreSQL
+     * aborts the transaction on the failed INSERT.
      */
     @Override
     @Transactional
     public void append(List<EntitlementEvent> events) {
         Objects.requireNonNull(events, "events cannot be null");
         for (EntitlementEvent event : events) {
-            try {
+            String payload = PricingJsonMapper.toJson(event);
+            boolean inserted = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () ->
                 jdbcTemplate.update(INSERT,
                     event.eventId(), event.tenantId().value(), event.customerId().value(),
                     event.featureKey(), event.type().name(), event.featureType().name(),
                     event.quotaLimit().orElse(null),
                     Timestamp.from(event.effectiveAt()), Timestamp.from(event.recordedAt()),
                     event.previousState().map(PricingJsonMapper::toJson).orElse(null),
-                    event.reason(), PricingJsonMapper.toJson(event),
-                    Timestamp.from(event.recordedAt()));
-            } catch (DuplicateKeyException e) {
-                Integer conflicts = jdbcTemplate.queryForObject("""
-                    SELECT COUNT(*) FROM entitlement_events
-                    WHERE event_id = ? AND payload_json <> ?
-                    """, Integer.class, event.eventId(), PricingJsonMapper.toJson(event));
-                if (conflicts != null && conflicts > 0) {
-                    throw new IllegalArgumentException(
-                        "Entitlement event id " + event.eventId()
-                            + " already exists with different content; the stream is append-only", e);
-                }
-                // Identical redelivery: already recorded, nothing to do.
+                    event.reason(), payload,
+                    Timestamp.from(event.recordedAt())));
+            if (inserted) {
+                continue;
             }
+            Integer conflicts = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM entitlement_events
+                WHERE event_id = ? AND payload_json <> ?
+                """, Integer.class, event.eventId(), payload);
+            if (conflicts != null && conflicts > 0) {
+                throw new IllegalArgumentException(
+                    "Entitlement event id " + event.eventId()
+                        + " already exists with different content; the stream is append-only");
+            }
+            // Identical redelivery: already recorded, nothing to do.
         }
     }
 

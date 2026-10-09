@@ -196,7 +196,7 @@ public class EnterprisePricingService {
                     drawdownResult.walletId(),
                     com.saas.pricing.core.model.wallet.LedgerEntryType.DRAWDOWN,
                     drawdownResult.totalCreditsDrawn().negate(),
-                    drawdownResult.totalCreditMoneyValue().currency(),
+                    drawdownResult.totalCreditMoneyValue().negate(),
                     pricingResult.calculationId(),
                     evalTime)
             ));

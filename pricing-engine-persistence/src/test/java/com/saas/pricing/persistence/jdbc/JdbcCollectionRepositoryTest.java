@@ -2,6 +2,7 @@ package com.saas.pricing.persistence.jdbc;
 
 import com.saas.pricing.core.model.Money;
 import com.saas.pricing.core.model.CurrencyUnit;
+import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.collection.PaymentAttempt;
 import com.saas.pricing.persistence.jdbc.JdbcCollectionRepository;
 
@@ -52,7 +53,7 @@ class JdbcCollectionRepositoryTest extends BaseJdbcRepositoryTest {
             "card_declined", "insufficient funds", Optional.of(T1));
 
         assertThat(repo.record(attempt)).isTrue();
-        var loaded = repo.findAttempts(null, "inv-1");
+        var loaded = repo.findAttempts(TenantId.of("t1"), "inv-1");
 
         assertThat(loaded).hasSize(1);
         assertThat(loaded.getFirst().attemptId()).isEqualTo("inv-1-1");
@@ -72,7 +73,7 @@ class JdbcCollectionRepositoryTest extends BaseJdbcRepositoryTest {
         assertThat(repo.record(attempt))
             .as("a timed-out collection agent re-sending must not take the money again")
             .isFalse();
-        assertThat(repo.findAttempts(null, "inv-2")).hasSize(1);
+        assertThat(repo.findAttempts(TenantId.of("t1"), "inv-2")).hasSize(1);
     }
 
     @Test
@@ -117,5 +118,17 @@ class JdbcCollectionRepositoryTest extends BaseJdbcRepositoryTest {
         assertThat(repo.findDue(T1.minusSeconds(1))).isEmpty();
         assertThat(repo.findDue(T1)).hasSize(1);
         assertThat(repo.findDue(T1.plusSeconds(60))).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("attempt reads are tenant-scoped through the invoice")
+    void readsAreTenantScoped() {
+        seedInvoice("inv-scoped");
+        var repo = repository();
+        repo.record(PaymentAttempt.succeeded("inv-scoped", 1, Money.of("100.00", USD), T0));
+
+        assertThat(repo.findAttempts(TenantId.of("t1"), "inv-scoped")).hasSize(1);
+        assertThat(repo.findAttempts(TenantId.of("other"), "inv-scoped")).isEmpty();
+        assertThat(repo.findLatest(TenantId.of("other"), "inv-scoped")).isEmpty();
     }
 }

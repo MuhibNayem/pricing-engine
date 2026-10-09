@@ -6,38 +6,41 @@
 --
 -- WHY A SEPARATE FILE
 --
--- It uses PostgreSQL CREATE RULE, which H2 does not implement. V8 is portable
--- and fully exercised by the automated tests; THIS script is verified only
--- against a real PostgreSQL server. It is excluded from the H2 test fixture on
--- purpose rather than silently degraded - see BaseJdbcRepositoryTest, which loads
--- V1-V4, V6 and V8 but not V5, V7 or V9.
+-- It uses plpgsql triggers, which H2 does not implement. V8 is portable and fully
+-- exercised by the automated tests; THIS script is verified against real
+-- PostgreSQL by PostgresMigrationTest.
 --
--- The Java layer (JdbcEntitlementEventRepository) enforces the same rules, so the
--- application path is covered by CI; this is the defence-in-depth layer.
+-- UPDATE and DELETE raise rather than being silently ignored: a rule that does
+-- nothing makes a mutation look like it succeeded, which is worse for an audit
+-- than an outright refusal.
 -- ==============================================================================
 
-DO $$
+DROP RULE IF EXISTS entitlement_events_no_update ON entitlement_events;
+DROP RULE IF EXISTS entitlement_events_no_delete ON entitlement_events;
+
+CREATE OR REPLACE FUNCTION entitlement_events_reject_mutation() RETURNS trigger AS $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_rules
-        WHERE schemaname = current_schema() AND tablename = 'entitlement_events'
-    ) THEN
+    RAISE EXCEPTION
+        'entitlement_events is append-only: % is rejected; record a new event instead',
+        TG_OP;
+END;
+$$ LANGUAGE plpgsql;
 
-        -- "Why did this customer lose access on 3 March" is only answerable if March is still here.
-        CREATE RULE entitlement_events_no_update AS
-            ON UPDATE TO entitlement_events
-            DO INSTEAD NOTHING;
+DROP TRIGGER IF EXISTS trg_entitlement_events_no_update ON entitlement_events;
+CREATE TRIGGER trg_entitlement_events_no_update
+    BEFORE UPDATE ON entitlement_events
+    FOR EACH ROW EXECUTE FUNCTION entitlement_events_reject_mutation();
 
-        CREATE RULE entitlement_events_no_delete AS
-            ON DELETE TO entitlement_events
-            DO INSTEAD NOTHING;
+DROP TRIGGER IF EXISTS trg_entitlement_events_no_delete ON entitlement_events;
+CREATE TRIGGER trg_entitlement_events_no_delete
+    BEFORE DELETE ON entitlement_events
+    FOR EACH ROW EXECUTE FUNCTION entitlement_events_reject_mutation();
 
-    END IF;
-END
-$$;
-
--- A feature may not be revoked twice in a row. A duplicate revocation is a redelivery bug that,
+-- A feature may not be revoked twice in a row. A duplicate revocation is a redelivery bug that
 -- would otherwise reach the customer as a second, spurious access-revocation notice.
+--
+-- Excluding NEW.event_id is the whole point: this is an AFTER INSERT trigger, so without the
+-- exclusion the row being inserted matches its own EXISTS and EVERY revocation is rejected.
 CREATE OR REPLACE FUNCTION entitlement_no_double_revoke() RETURNS trigger AS $$
 BEGIN
     IF NEW.change_type <> 'REVOKED' THEN
@@ -50,6 +53,7 @@ BEGIN
           AND customer_id = NEW.customer_id
           AND feature_key = NEW.feature_key
           AND change_type = 'REVOKED'
+          AND event_id <> NEW.event_id
     ) THEN
         RAISE EXCEPTION
             'Feature % for customer %/% has already been revoked',

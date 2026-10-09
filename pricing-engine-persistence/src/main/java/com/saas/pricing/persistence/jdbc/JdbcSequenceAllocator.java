@@ -104,15 +104,19 @@ public class JdbcSequenceAllocator implements SequenceAllocator {
      *
      * <p>Seeded at {@code start_at - 1}, not 0: a migrated series starting at 500 must have a
      * counter already sitting just below it, and the schema forbids a counter before its own start.
+     *
+     * <p>The benign "someone else created it first" collision is absorbed by
+     * {@link JdbcDuplicateGuard}, which uses a savepoint when a caller transaction is active.
+     * Merely catching the duplicate-key exception works only outside a transaction: on PostgreSQL
+     * the failed INSERT aborts the enclosing transaction and every later statement fails with
+     * 25P02. This method used to justify running outside the transaction for that reason, but a
+     * caller is free to wrap {@code nextValue} in one.
      */
     private void ensureSeries(TenantId tenantId, String sequenceKey, long startAt) {
-        try {
+        JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () ->
             jdbcTemplate.update("""
                 INSERT INTO invoice_number_sequences (tenant_id, sequence_key, next_value, start_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
-                """, tenantId.value(), sequenceKey, startAt - 1, startAt, Timestamp.from(Instant.now()));
-        } catch (org.springframework.dao.DuplicateKeyException alreadyCreated) {
-            // Another thread created it between our lookup and this insert. Its settings stand.
-        }
+                """, tenantId.value(), sequenceKey, startAt - 1, startAt, Timestamp.from(Instant.now())));
     }
 }

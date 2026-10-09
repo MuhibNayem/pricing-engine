@@ -5,30 +5,36 @@
 -- rewritten: a collection agent or an operator cannot quietly delete a failed
 -- attempt to make an invoice look like it was never chased.
 --
--- PostgreSQL-only (CREATE RULE), so it is excluded from the H2 test fixture -
--- see BaseJdbcRepositoryTest, which loads V1-V4, V6, V8 and V10 but not V5, V7,
--- V9 or V11. The Java layer enforces the same rule, so CI covers the application
--- path; this is the defence-in-depth layer, verified only against PostgreSQL.
+-- PostgreSQL-only (plpgsql triggers), so it is excluded from the H2 test fixture -
+-- see BaseJdbcRepositoryTest. The Java layer enforces the same rule, so CI covers
+-- the application path; this is the defence-in-depth layer, verified against a
+-- real PostgreSQL by PostgresMigrationTest.
+--
+-- UPDATE and DELETE raise rather than being silently ignored: a rule that does
+-- nothing makes a mutation look like it succeeded, which is worse for an audit
+-- than an outright refusal.
 -- ==============================================================================
 
-DO $$
+DROP RULE IF EXISTS payment_attempts_no_update ON payment_attempts;
+DROP RULE IF EXISTS payment_attempts_no_delete ON payment_attempts;
+
+CREATE OR REPLACE FUNCTION payment_attempts_reject_mutation() RETURNS trigger AS $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_rules
-        WHERE schemaname = current_schema() AND tablename = 'payment_attempts'
-    ) THEN
+    RAISE EXCEPTION
+        'payment_attempts is append-only: % is rejected; record the next attempt instead',
+        TG_OP;
+END;
+$$ LANGUAGE plpgsql;
 
-        CREATE RULE payment_attempts_no_update AS
-            ON UPDATE TO payment_attempts
-            DO INSTEAD NOTHING;
+DROP TRIGGER IF EXISTS trg_payment_attempts_no_update ON payment_attempts;
+CREATE TRIGGER trg_payment_attempts_no_update
+    BEFORE UPDATE ON payment_attempts
+    FOR EACH ROW EXECUTE FUNCTION payment_attempts_reject_mutation();
 
-        CREATE RULE payment_attempts_no_delete AS
-            ON DELETE TO payment_attempts
-            DO INSTEAD NOTHING;
-
-    END IF;
-END
-$$;
+DROP TRIGGER IF EXISTS trg_payment_attempts_no_delete ON payment_attempts;
+CREATE TRIGGER trg_payment_attempts_no_delete
+    BEFORE DELETE ON payment_attempts
+    FOR EACH ROW EXECUTE FUNCTION payment_attempts_reject_mutation();
 
 -- An invoice must not be collected for the same attempt number twice.
 --

@@ -5,12 +5,12 @@ import com.saas.pricing.core.model.idempotency.IdempotencyDecision;
 import com.saas.pricing.core.model.idempotency.IdempotencyRecord;
 import com.saas.pricing.core.spi.IdempotencyKeyStore;
 
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Objects;
 
@@ -60,8 +60,15 @@ public class JdbcIdempotencyKeyStore implements IdempotencyKeyStore {
             throw new IllegalArgumentException("Idempotency key cannot be blank");
         }
 
-        IdempotencyRecord claim = IdempotencyRecord.claim(tenantId, key, fingerprint, now, ttl);
-        try {
+        // PostgreSQL stores TIMESTAMP WITH TIME ZONE at microsecond resolution while Instant.now()
+        // carries nanoseconds. The fence in complete()/release() compares recorded_at for equality,
+        // so the claim time is truncated to microseconds here - otherwise the value read back after
+        // a round trip would never equal the in-memory claim and the key would stay IN_FLIGHT until
+        // its TTL, rejecting every retry with 409.
+        Instant claimTime = now.truncatedTo(ChronoUnit.MICROS);
+        IdempotencyRecord claim = IdempotencyRecord.claim(tenantId, key, fingerprint, claimTime, ttl);
+
+        boolean inserted = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () ->
             jdbcTemplate.update("""
                 INSERT INTO idempotency_keys (
                     tenant_id, idem_key, fingerprint, status,
@@ -69,11 +76,11 @@ public class JdbcIdempotencyKeyStore implements IdempotencyKeyStore {
                 ) VALUES (?, ?, ?, 'IN_FLIGHT', 0, '', ?, ?)
                 """,
                 tenantId.value(), key, fingerprint,
-                Timestamp.from(now), Timestamp.from(now.plus(ttl)));
+                Timestamp.from(claimTime), Timestamp.from(claimTime.plus(ttl))));
+        if (inserted) {
             return IdempotencyDecision.proceed(claim);
-        } catch (DuplicateKeyException e) {
-            // Someone else holds the key; work out what they are doing.
         }
+        // Someone else holds the key; work out what they are doing.
 
         IdempotencyRecord existing = find(tenantId, key);
         if (existing == null) {
@@ -88,7 +95,7 @@ public class JdbcIdempotencyKeyStore implements IdempotencyKeyStore {
                     recorded_at = ?, expires_at = ?
                 WHERE tenant_id = ? AND idem_key = ? AND expires_at <= ?
                 """,
-                fingerprint, Timestamp.from(now), Timestamp.from(now.plus(ttl)),
+                fingerprint, Timestamp.from(claimTime), Timestamp.from(claimTime.plus(ttl)),
                 tenantId.value(), key, Timestamp.from(now));
 
             if (reclaimed == 1) {
@@ -120,24 +127,44 @@ public class JdbcIdempotencyKeyStore implements IdempotencyKeyStore {
     public void complete(TenantId tenantId, IdempotencyRecord claim, int httpStatus, String responseBody) {
         Objects.requireNonNull(claim, "claim cannot be null");
         // Fenced on recorded_at and on still-being-in-flight: a slow original whose key was already
-        // reclaimed must not overwrite the newer execution's row.
-        jdbcTemplate.update("""
+        // reclaimed must not overwrite the newer execution's row. A zero update count is therefore
+        // normally "someone else owns it now" and is a no-op; a live row that still matches the
+        // claim could not match 0 rows, so that state means the fence is broken and is surfaced.
+        int updated = jdbcTemplate.update("""
             UPDATE idempotency_keys
             SET status = 'COMPLETED', response_status = ?, response_body = ?
             WHERE tenant_id = ? AND idem_key = ? AND status = 'IN_FLIGHT' AND recorded_at = ?
             """,
             httpStatus, responseBody == null ? "" : responseBody,
             tenantId.value(), claim.key(), Timestamp.from(claim.recordedAt()));
+        if (updated == 0 && stillHeldBy(tenantId, claim)) {
+            throw new IllegalStateException(
+                "Idempotency claim " + tenantId.value() + "/" + claim.key()
+                    + " is still in flight but could not be completed; recorded_at did not match");
+        }
     }
 
     @Override
     public void release(TenantId tenantId, IdempotencyRecord claim) {
         Objects.requireNonNull(claim, "claim cannot be null");
-        jdbcTemplate.update("""
+        int deleted = jdbcTemplate.update("""
             DELETE FROM idempotency_keys
             WHERE tenant_id = ? AND idem_key = ? AND status = 'IN_FLIGHT' AND recorded_at = ?
             """,
             tenantId.value(), claim.key(), Timestamp.from(claim.recordedAt()));
+        if (deleted == 0 && stillHeldBy(tenantId, claim)) {
+            throw new IllegalStateException(
+                "Idempotency claim " + tenantId.value() + "/" + claim.key()
+                    + " is still in flight but could not be released; recorded_at did not match");
+        }
+    }
+
+    /** True when the stored row is still exactly the caller's live claim. */
+    private boolean stillHeldBy(TenantId tenantId, IdempotencyRecord claim) {
+        IdempotencyRecord current = find(tenantId, claim.key());
+        return current != null
+            && current.status() == IdempotencyRecord.Status.IN_FLIGHT
+            && current.recordedAt().equals(claim.recordedAt());
     }
 
     private IdempotencyRecord find(TenantId tenantId, String key) {

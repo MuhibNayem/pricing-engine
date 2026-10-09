@@ -107,12 +107,22 @@ DECLARE
     already      NUMERIC(24, 8);
     projected    NUMERIC(24, 8);
 BEGIN
+    -- A voided note frees the cap and is not itself counted against it.
+    IF NEW.status <> 'ISSUED' THEN
+        RETURN NEW;
+    END IF;
+
     SELECT total INTO invoice_total FROM invoices WHERE invoice_id = NEW.invoice_id;
 
     -- Only credits still in force count; a voided credit frees the cap.
+    --
+    -- The row being inserted/updated is excluded by id. This is an AFTER trigger, so without the
+    -- exclusion the new row is already visible to its own SUM and is counted twice: a full-value
+    -- credit would project 2x the invoice and be rejected, capping credits at half the invoice.
     SELECT COALESCE(SUM(-total), 0) INTO already
         FROM credit_notes
-        WHERE invoice_id = NEW.invoice_id AND status = 'ISSUED';
+        WHERE invoice_id = NEW.invoice_id AND status = 'ISSUED'
+          AND credit_note_id <> NEW.credit_note_id;
 
     projected := already + (-NEW.total);
 
@@ -129,9 +139,11 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_credit_note_within_invoice_total ON credit_notes;
 
--- DEFERRABLE so that a credit issued and immediately voided in the same
--- transaction does not transiently trip the cap.
+-- Fires on INSERT and on a status change, so a draft note issued later is capped too; a trigger
+-- only on INSERT would let a note escape the cap by being created VOID and then issued.
+-- DEFERRABLE so that a credit issued and immediately voided in the same transaction does not
+-- transiently trip the cap.
 CREATE CONSTRAINT TRIGGER trg_credit_note_within_invoice_total
-    AFTER INSERT ON credit_notes
+    AFTER INSERT OR UPDATE OF status ON credit_notes
     DEFERRABLE INITIALLY IMMEDIATE
     FOR EACH ROW EXECUTE FUNCTION credit_note_within_invoice_total();

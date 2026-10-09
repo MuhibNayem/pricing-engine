@@ -2,6 +2,7 @@ package com.saas.pricing.core.model.wallet;
 
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.CurrencyUnit;
+import com.saas.pricing.core.model.Money;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.spi.impl.InMemoryWalletRepository;
 
@@ -42,11 +43,13 @@ class LedgerEntryTest {
 
     private LedgerEntry grant() {
         return LedgerEntry.of("e-grant", "w1", LedgerEntryType.GRANT_ISSUED,
-            new BigDecimal("100.00"), USD, "calc-0", T0);
+            new BigDecimal("100.00"), Money.of(new BigDecimal("100.00"), USD), "calc-0", T0);
     }
 
     private LedgerEntry drawdown(String id, String credits, Instant at) {
-        return LedgerEntry.of(id, "w1", LedgerEntryType.DRAWDOWN, new BigDecimal(credits), USD, "calc-1", at);
+        BigDecimal signed = new BigDecimal(credits);
+        return LedgerEntry.of(id, "w1", LedgerEntryType.DRAWDOWN, signed,
+            Money.of(signed, USD), "calc-1", at);
     }
 
     @Nested
@@ -57,7 +60,7 @@ class LedgerEntryTest {
         @DisplayName("a reversal must reference the entry it negates")
         void reversalMustReferenceAnEntry() {
             assertThatThrownBy(() -> new LedgerEntry("r1", "w1", LedgerEntryType.REVERSAL,
-                new BigDecimal("10.00"), com.saas.pricing.core.model.Money.zero(USD), "c",
+                new BigDecimal("10.00"), Money.of(new BigDecimal("10.00"), USD), "c",
                 Optional.empty(), Optional.of("x"), T1, Map.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("must reference");
@@ -67,7 +70,7 @@ class LedgerEntryTest {
         @DisplayName("only a REVERSAL may reference another entry")
         void onlyReversalMayReference() {
             assertThatThrownBy(() -> new LedgerEntry("d1", "w1", LedgerEntryType.DRAWDOWN,
-                new BigDecimal("-10.00"), com.saas.pricing.core.model.Money.zero(USD), "c",
+                new BigDecimal("-10.00"), Money.of(new BigDecimal("-10.00"), USD), "c",
                 Optional.of("e-grant"), Optional.empty(), T1, Map.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("REVERSAL");
@@ -77,7 +80,7 @@ class LedgerEntryTest {
         @DisplayName("a reversal cannot reference itself")
         void reversalCannotBeSelfReferential() {
             assertThatThrownBy(() -> new LedgerEntry("r1", "w1", LedgerEntryType.REVERSAL,
-                new BigDecimal("10.00"), com.saas.pricing.core.model.Money.zero(USD), "c",
+                new BigDecimal("10.00"), Money.of(new BigDecimal("10.00"), USD), "c",
                 Optional.of("r1"), Optional.of("x"), T1, Map.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("itself");
@@ -87,10 +90,22 @@ class LedgerEntryTest {
         @DisplayName("a manual adjustment must state a reason")
         void adjustmentRequiresReason() {
             assertThatThrownBy(() -> new LedgerEntry("a1", "w1", LedgerEntryType.ADJUSTMENT,
-                new BigDecimal("0.01"), com.saas.pricing.core.model.Money.zero(USD), "c",
+                new BigDecimal("0.01"), Money.of(new BigDecimal("0.01"), USD), "c",
                 Optional.empty(), Optional.empty(), T1, Map.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("reason");
+        }
+
+        @Test
+        @DisplayName("credits and their money equivalent must agree in sign")
+        void signAgreementEnforced() {
+            // The shape the removed factory used to produce: a negative drawdown with zero money.
+            // V4 rejects it in the database; the model rejects it before it gets there.
+            assertThatThrownBy(() -> new LedgerEntry("d-bad", "w1", LedgerEntryType.DRAWDOWN,
+                new BigDecimal("-10.00"), Money.zero(USD), "c",
+                Optional.empty(), Optional.empty(), T1, Map.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("agree in sign");
         }
     }
 
@@ -173,7 +188,7 @@ class LedgerEntryTest {
 
             assertThatThrownBy(() -> repository.appendLedgerEntries(List.of(
                 LedgerEntry.of("e-grant", "w1", LedgerEntryType.GRANT_ISSUED,
-                    new BigDecimal("999.00"), USD, "calc-0", T0))))
+                    new BigDecimal("999.00"), Money.of(new BigDecimal("999.00"), USD), "calc-0", T0))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("append-only");
 
@@ -213,7 +228,7 @@ class LedgerEntryTest {
             var wallet = Wallet.of("w1", TenantId.of("t1"), CustomerId.of("c1"), USD, List.of(grant));
             repository.appendLedgerEntries(List.of(
                 LedgerEntry.of("e-grant", "w1", LedgerEntryType.GRANT_ISSUED,
-                    new BigDecimal("100.00"), USD, "c", T0)));
+                    new BigDecimal("100.00"), Money.of(new BigDecimal("100.00"), USD), "c", T0)));
 
             assertThat(repository.reconcile(wallet, T1))
                 .as("stored balance matches the ledger")

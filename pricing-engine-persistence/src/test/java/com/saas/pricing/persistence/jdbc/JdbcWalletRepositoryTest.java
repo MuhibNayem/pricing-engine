@@ -6,6 +6,8 @@ import com.saas.pricing.core.model.Money;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.wallet.CreditGrant;
 import com.saas.pricing.core.model.wallet.DrawdownTransaction;
+import com.saas.pricing.core.model.wallet.LedgerEntry;
+import com.saas.pricing.core.model.wallet.LedgerEntryType;
 import com.saas.pricing.core.model.wallet.Wallet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,6 +19,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class JdbcWalletRepositoryTest extends BaseJdbcRepositoryTest {
 
@@ -73,5 +76,32 @@ class JdbcWalletRepositoryTest extends BaseJdbcRepositoryTest {
         assertThat(transactions).hasSize(1);
         assertThat(transactions.getFirst().creditsDrawn()).isEqualByComparingTo("50.00");
         assertThat(transactions.getFirst().calculationId()).isEqualTo("calc_999");
+    }
+
+    @Test
+    @DisplayName("ledger entries with real money round-trip; retries no-op; conflicts refused")
+    void ledgerAppendSemantics() {
+        Instant now = Instant.parse("2026-10-08T00:00:00Z");
+        repository.save(Wallet.of("wal_ledger", tenantId, customerId, CurrencyUnit.USD, List.of()));
+
+        // Regression: LedgerEntry.of used to store Money.zero, which violates the V4
+        // sign-agreement CHECK for any non-zero movement. The drawdown now carries its money.
+        LedgerEntry grant = LedgerEntry.of("led-g", "wal_ledger", LedgerEntryType.GRANT_ISSUED,
+            new BigDecimal("100.00"), Money.of("100.00", CurrencyUnit.USD), "calc-g", now);
+        LedgerEntry drawdown = LedgerEntry.of("led-d", "wal_ledger", LedgerEntryType.DRAWDOWN,
+            new BigDecimal("-10.00"), Money.of("-10.00", CurrencyUnit.USD), "calc-d", now.plusSeconds(1));
+        repository.appendLedgerEntries(List.of(grant, drawdown));
+
+        assertThat(repository.findLedgerEntries("wal_ledger")).hasSize(2);
+
+        // A retry re-appends the identical entry: a no-op, not a duplicate-key error.
+        repository.appendLedgerEntries(List.of(drawdown));
+        assertThat(repository.findLedgerEntries("wal_ledger")).hasSize(2);
+
+        LedgerEntry conflicting = LedgerEntry.of("led-d", "wal_ledger", LedgerEntryType.DRAWDOWN,
+            new BigDecimal("-99.00"), Money.of("-99.00", CurrencyUnit.USD), "calc-d", now.plusSeconds(1));
+        assertThatThrownBy(() -> repository.appendLedgerEntries(List.of(conflicting)))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("append-only");
     }
 }

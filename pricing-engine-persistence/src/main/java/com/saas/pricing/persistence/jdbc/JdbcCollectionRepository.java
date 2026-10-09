@@ -7,7 +7,6 @@ import com.saas.pricing.core.model.collection.PaymentAttempt;
 import com.saas.pricing.core.spi.CollectionRepository;
 import com.saas.pricing.persistence.json.PricingJsonMapper;
 
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,9 +39,21 @@ public class JdbcCollectionRepository implements CollectionRepository {
         """;
 
     private static final String SELECT = """
-        SELECT attempt_id, invoice_id, attempt_number, amount, currency, status,
-               failure_code, failure_reason, attempted_at, next_attempt_at
-        FROM payment_attempts
+        SELECT pa.attempt_id, pa.invoice_id, pa.attempt_number, pa.amount, pa.currency, pa.status,
+               pa.failure_code, pa.failure_reason, pa.attempted_at, pa.next_attempt_at
+        FROM payment_attempts pa
+        """;
+
+    /**
+     * Tenant scoping is enforced by joining the invoice, because {@code payment_attempts} carries no
+     * tenant column of its own (V10). Without this, any caller holding an invoice id could read
+     * another tenant's collection history.
+     */
+    private static final String TENANT_SCOPE = """
+         AND EXISTS (
+             SELECT 1 FROM invoices i
+             WHERE i.invoice_id = pa.invoice_id AND i.tenant_id = ?
+         )
         """;
 
     /**
@@ -51,45 +62,55 @@ public class JdbcCollectionRepository implements CollectionRepository {
      * <p>An identical re-delivery collides on the primary key and is reported as {@code false}
      * rather than raising, because that is exactly what a retried collection request looks like and
      * it must not become a second charge.
+     *
+     * <p>The collision is absorbed through a savepoint ({@link JdbcDuplicateGuard}); the naive
+     * catch-then-read pattern only works on H2, because PostgreSQL aborts the transaction on the
+     * failed INSERT.
      */
     @Override
     @Transactional
     public boolean record(PaymentAttempt attempt) {
         Objects.requireNonNull(attempt, "attempt cannot be null");
-        try {
+        String payload = PricingJsonMapper.toJson(attempt);
+        boolean inserted = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () ->
             jdbcTemplate.update(INSERT,
                 attempt.attemptId(), attempt.invoiceId(), attempt.attemptNumber(),
                 attempt.amount().amount(), attempt.amount().currency().code(), attempt.status().name(),
                 attempt.failureCode().orElse(null), attempt.failureReason().orElse(null),
                 Timestamp.from(attempt.attemptedAt()),
                 attempt.nextAttemptAt().map(Timestamp::from).orElse(null),
-                PricingJsonMapper.toJson(attempt),
-                Timestamp.from(attempt.attemptedAt()));
+                payload,
+                Timestamp.from(attempt.attemptedAt())));
+        if (inserted) {
             return true;
-        } catch (DuplicateKeyException e) {
-            Integer conflicting = jdbcTemplate.queryForObject("""
-                SELECT COUNT(*) FROM payment_attempts
-                WHERE attempt_id = ? AND payload_json <> ?
-                """, Integer.class, attempt.attemptId(), PricingJsonMapper.toJson(attempt));
-            if (conflicting != null && conflicting > 0) {
-                throw new IllegalArgumentException(
-                    "Attempt id " + attempt.attemptId() + " exists with different content; the ledger is append-only", e);
-            }
-            return false;
         }
+        Integer conflicting = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM payment_attempts
+            WHERE attempt_id = ? AND payload_json <> ?
+            """, Integer.class, attempt.attemptId(), payload);
+        if (conflicting != null && conflicting > 0) {
+            throw new IllegalArgumentException(
+                "Attempt id " + attempt.attemptId() + " exists with different content; the ledger is append-only");
+        }
+        return false;
     }
 
     @Override
     public List<PaymentAttempt> findAttempts(TenantId tenantId, String invoiceId) {
+        Objects.requireNonNull(tenantId, "tenantId cannot be null");
         Objects.requireNonNull(invoiceId, "invoiceId cannot be null");
-        return jdbcTemplate.query(SELECT + " WHERE invoice_id = ? ORDER BY attempt_number",
-            (rs, rowNum) -> read(rs), invoiceId);
+        return jdbcTemplate.query(SELECT
+                + " WHERE pa.invoice_id = ?" + TENANT_SCOPE + " ORDER BY pa.attempt_number",
+            (rs, rowNum) -> read(rs), invoiceId, tenantId.value());
     }
 
     @Override
     public Optional<PaymentAttempt> findLatest(TenantId tenantId, String invoiceId) {
-        return jdbcTemplate.query(SELECT + " WHERE invoice_id = ? ORDER BY attempt_number DESC LIMIT 1",
-                (rs, rowNum) -> read(rs), invoiceId)
+        Objects.requireNonNull(tenantId, "tenantId cannot be null");
+        Objects.requireNonNull(invoiceId, "invoiceId cannot be null");
+        return jdbcTemplate.query(SELECT
+                + " WHERE pa.invoice_id = ?" + TENANT_SCOPE + " ORDER BY pa.attempt_number DESC LIMIT 1",
+                (rs, rowNum) -> read(rs), invoiceId, tenantId.value())
             .stream().findFirst();
     }
 

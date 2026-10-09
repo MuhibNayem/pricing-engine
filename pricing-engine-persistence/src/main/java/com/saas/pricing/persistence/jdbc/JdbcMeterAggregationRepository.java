@@ -191,7 +191,8 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
         if (customerId.isPresent()) {
             sql = """
                 SELECT aggregation_id, tenant_id, customer_id, meter_code, aggregation_type,
-                       window_start, window_end, aggregated_value, event_count, last_event_time
+                       window_start, window_end, aggregated_value, event_count, last_event_time,
+                       approximate
                 FROM meter_aggregations
                 WHERE tenant_id = ? AND customer_id = ?
                   AND window_start = ? AND window_end = ?

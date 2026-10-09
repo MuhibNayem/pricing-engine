@@ -250,4 +250,61 @@ class JdbcInvoiceRepositoryTest extends BaseJdbcRepositoryTest {
             .invoices()).hasSize(1);
         assertThat(repo.MAX_PAGE_SIZE).isEqualTo(200);
     }
+
+    @Test
+    @DisplayName("a malformed page token is a clear refusal, not an internal error")
+    void malformedPageTokenRefused() {
+        var repo = repository();
+
+        // Instant.parse used to throw DateTimeParseException straight out, which no handler maps,
+        // so a client typo became a 500.
+        assertThatThrownBy(() -> repo.listInvoices(TENANT, java.util.Optional.empty(), null, 10,
+            "not-a-date|inv-1"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("page token");
+
+        assertThatThrownBy(() -> repo.listInvoices(TENANT, java.util.Optional.empty(), null, 10,
+            "2026-10-01T00:00:00Z"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("page token");
+    }
+
+    @Test
+    @DisplayName("a paid invoice cannot return to OPEN and a payment cannot shrink")
+    void terminalAndPaymentMonotonicityEnforced() {
+        var repo = repository();
+        var issued = draft("inv-7", "100.00").finalizeInvoice("INV-2026-0007", T0);
+        repo.createInvoice(issued);
+        var paid = issued.recordPayment(Money.of("110.00", USD));
+        repo.updateInvoice(paid);
+
+        var reopened = new Invoice(paid.invoiceId(), paid.tenantId(), paid.customerId(),
+            paid.planCode(), paid.currency(), InvoiceStatus.OPEN, paid.invoiceNumber(),
+            paid.periodStart(), paid.periodEnd(), paid.issuedAt(), paid.lineItems(),
+            paid.subtotal(), paid.taxTotal(), paid.total(), paid.amountPaid(), paid.metadata());
+        assertThatThrownBy(() -> repo.updateInvoice(reopened))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("Illegal invoice transition");
+
+        var shrunkenPayment = new Invoice(paid.invoiceId(), paid.tenantId(), paid.customerId(),
+            paid.planCode(), paid.currency(), InvoiceStatus.PAID, paid.invoiceNumber(),
+            paid.periodStart(), paid.periodEnd(), paid.issuedAt(), paid.lineItems(),
+            paid.subtotal(), paid.taxTotal(), paid.total(), Money.zero(USD), paid.metadata());
+        assertThatThrownBy(() -> repo.updateInvoice(shrunkenPayment))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("cannot decrease");
+    }
+
+    @Test
+    @DisplayName("credit note reads are tenant-scoped")
+    void creditNoteReadsAreTenantScoped() {
+        var repo = repository();
+        var invoice = draft("inv-8", "100.00").finalizeInvoice("INV-2026-0008", T0);
+        repo.createInvoice(invoice);
+        repo.recordCreditNote(CreditNote.forFullInvoice("cn-8", invoice, "cancelled", T0));
+
+        assertThat(repo.findCreditNotes(TenantId.of("other-tenant"), "inv-8")).isEmpty();
+        assertThat(repo.totalCredited(TenantId.of("other-tenant"), "inv-8")).isEqualByComparingTo("0");
+        assertThat(repo.totalCredited(TENANT, "inv-8")).isEqualByComparingTo("110.00");
+    }
 }

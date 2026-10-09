@@ -105,16 +105,19 @@ public class JdbcWalletRepository implements WalletRepository {
      *
      * <p>Insert only. There is deliberately no update or delete path: a correction is a REVERSAL
      * row, and migration V5 rejects UPDATE and DELETE at the database level as defence in depth.
+     *
+     * <p>A re-appended identical entry is a no-op (a retry after a serialization failure), and a
+     * reused id with different content is refused. The collision is absorbed with a savepoint
+     * ({@link JdbcDuplicateGuard}) because catching the duplicate-key exception and reading on only
+     * works on H2 - PostgreSQL aborts the transaction on the failed INSERT.
      */
     @Override
     @Transactional
     public void appendLedgerEntries(List<LedgerEntry> entries) {
         Objects.requireNonNull(entries, "entries cannot be null");
         for (LedgerEntry entry : entries) {
-            // A retry after a serialization failure re-appends an identical entry; the primary
-            // key turns that into a no-op rather than an error. Re-using an id for different
-            // content still fails, which is the behaviour we want.
-            jdbcTemplate.update(INSERT_LEDGER,
+            boolean inserted = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () ->
+                jdbcTemplate.update(INSERT_LEDGER,
                     entry.entryId(),
                     entry.walletId(),
                     entry.type().name(),
@@ -124,8 +127,43 @@ public class JdbcWalletRepository implements WalletRepository {
                     entry.calculationId(),
                     entry.reversesEntryId().orElse(null),
                     entry.reason().orElse(null),
-                    Timestamp.from(entry.createdAt()));
+                    Timestamp.from(entry.createdAt())));
+
+            if (inserted) {
+                continue;
+            }
+
+            LedgerEntry existing = jdbcTemplate.query(SELECT_LEDGER + " WHERE entry_id = ?",
+                    (rs, rowNum) -> readLedgerEntry(rs), entry.entryId())
+                .stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                    "Ledger entry " + entry.entryId()
+                        + " vanished between the conflicting insert and the read"));
+
+            if (!sameContent(existing, entry)) {
+                throw new IllegalArgumentException(
+                    "Ledger entry id " + entry.entryId()
+                        + " already exists with different content; the ledger is append-only");
+            }
+            // Identical re-append: already recorded, nothing to do.
         }
+    }
+
+    /**
+     * Business-content equality, deliberately ignoring {@code createdAt} sub-microsecond precision.
+     *
+     * <p>PostgreSQL stores {@code TIMESTAMP WITH TIME ZONE} at microsecond resolution while
+     * {@link Instant#now()} carries nanoseconds, so an exact record equality would report a
+     * perfectly identical retry as a conflict after the timestamp round-trip.
+     */
+    private static boolean sameContent(LedgerEntry existing, LedgerEntry candidate) {
+        return existing.walletId().equals(candidate.walletId())
+            && existing.type() == candidate.type()
+            && existing.signedCredits().compareTo(candidate.signedCredits()) == 0
+            && existing.signedMoney().compareTo(candidate.signedMoney()) == 0
+            && existing.calculationId().equals(candidate.calculationId())
+            && existing.reversesEntryId().equals(candidate.reversesEntryId())
+            && existing.reason().equals(candidate.reason());
     }
 
     @Override

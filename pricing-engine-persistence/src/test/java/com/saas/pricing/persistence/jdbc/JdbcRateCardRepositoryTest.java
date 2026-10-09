@@ -299,4 +299,45 @@ class JdbcRateCardRepositoryTest extends BaseJdbcRepositoryTest {
         assertThat(rc.findItem("FORMULA_ITEM").orElseThrow().pricingModel()).isInstanceOf(PricingModel.DynamicFormulaModel.class);
         assertThat(rc.findItem("STAIR_ITEM").orElseThrow().pricingModel()).isInstanceOf(PricingModel.StairStepModel.class);
     }
+
+    @Test
+    @DisplayName("non-temporal lookup uses system time, not the queried valid time")
+    void nonTemporalLookupUsesCurrentSystemTime() {
+        // Regression: superseded_at (system time) was compared against the caller's effectiveTime
+        // (valid time). A card superseded now but queried for a past instant was returned, and a
+        // card recorded in the future could be returned too.
+        Instant effFrom = Instant.parse("2026-01-01T00:00:00Z");
+        PlanCode plan = PlanCode.of("SYSTEM_TIME_PLAN");
+
+        RateCard superseded = new RateCard(
+            "rc-old", tenantId, plan, 1, effFrom, Optional.empty(),
+            Instant.parse("2026-02-01T00:00:00Z"), Optional.of(Instant.parse("2026-03-01T00:00:00Z")),
+            com.saas.pricing.core.model.hierarchy.CatalogHierarchyLevel.ACCOUNT_DEFAULT,
+            List.of(RatePlanItem.of("SEAT", "Seat", PricingModel.PerUnitModel.of(new BigDecimal("10.00")), CurrencyUnit.USD)),
+            Map.of());
+        RateCard active = new RateCard(
+            "rc-new", tenantId, plan, 2, effFrom, Optional.empty(),
+            Instant.parse("2026-03-01T00:00:00Z"), Optional.empty(),
+            com.saas.pricing.core.model.hierarchy.CatalogHierarchyLevel.ACCOUNT_DEFAULT,
+            List.of(RatePlanItem.of("SEAT", "Seat", PricingModel.PerUnitModel.of(new BigDecimal("12.00")), CurrencyUnit.USD)),
+            Map.of());
+        RateCard notYetRecorded = new RateCard(
+            "rc-future", tenantId, plan, 3, effFrom, Optional.empty(),
+            Instant.parse("2027-01-01T00:00:00Z"), Optional.empty(),
+            com.saas.pricing.core.model.hierarchy.CatalogHierarchyLevel.ACCOUNT_DEFAULT,
+            List.of(RatePlanItem.of("SEAT", "Seat", PricingModel.PerUnitModel.of(new BigDecimal("99.00")), CurrencyUnit.USD)),
+            Map.of());
+
+        repository.save(superseded);
+        repository.save(active);
+        repository.save(notYetRecorded);
+
+        Optional<RateCard> found = repository.findEffectiveRateCard(
+            tenantId, plan, Instant.parse("2026-06-01T00:00:00Z"));
+
+        assertThat(found).isPresent();
+        assertThat(found.get().rateCardId())
+            .as("the superseded card is hidden and the not-yet-recorded card is not visible")
+            .isEqualTo("rc-new");
+    }
 }

@@ -152,4 +152,26 @@ class JdbcMeteringRepositoriesTest extends BaseJdbcRepositoryTest {
         assertThat(allAggs).hasSize(2);
         assertThat(allAggs).extracting(MeterAggregation::meterCode).containsExactlyInAnyOrder("API_CALLS", "STORAGE");
     }
+
+    @Test
+    @DisplayName("Should find aggregations for one customer without a column-mapping error")
+    void testFindAllAggregationsForOneCustomer() {
+        // Regression: the customer-filtered SELECT omitted the `approximate` column while the row
+        // mapper read it unconditionally, so this branch threw "column not found" and was untested.
+        TimeWindow window = TimeWindow.of(baseTime, baseTime.plus(Duration.ofHours(1)));
+        CustomerId cust1 = CustomerId.of("cust_alpha");
+        CustomerId cust2 = CustomerId.of("cust_beta");
+
+        aggregationRepository.saveAggregation(new MeterAggregation(
+            tenantId, Optional.of(cust1), "API_CALLS", window,
+            AggregationType.COUNT, BigDecimal.valueOf(10), 10, Optional.empty()));
+        aggregationRepository.saveAggregation(new MeterAggregation(
+            tenantId, Optional.of(cust2), "API_CALLS", window,
+            AggregationType.COUNT, BigDecimal.valueOf(7), 7, Optional.empty()));
+
+        List<MeterAggregation> found = aggregationRepository.findAllAggregations(tenantId, Optional.of(cust1), window);
+
+        assertThat(found).hasSize(1);
+        assertThat(found.getFirst().customerId()).contains(cust1);
+    }
 }

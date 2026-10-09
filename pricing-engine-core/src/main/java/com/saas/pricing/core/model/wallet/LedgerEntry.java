@@ -1,6 +1,5 @@
 package com.saas.pricing.core.model.wallet;
 
-import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.model.Money;
 
 import java.io.Serializable;
@@ -83,6 +82,15 @@ public record LedgerEntry(
         if (type == LedgerEntryType.ADJUSTMENT && reason.filter(r -> !r.isBlank()).isEmpty()) {
             throw new IllegalArgumentException("An ADJUSTMENT must carry a reason");
         }
+        // The two signed columns must agree in sign, mirroring ck_ledger_sign_agreement in V4.
+        // A DRAWDOWN with negative credits and zero money is the shape that used to be produced
+        // by the factory and gets rejected by the database; rejecting it here too turns a database
+        // error into a model error with a useful message.
+        if (credits.signum() != moneyValue.amount().signum()) {
+            throw new IllegalArgumentException(
+                "Credits and their money equivalent must agree in sign: "
+                    + credits.toPlainString() + " credits vs " + moneyValue);
+        }
     }
 
     /** Signed credit movement. */
@@ -105,12 +113,12 @@ public record LedgerEntry(
         String walletId,
         LedgerEntryType type,
         BigDecimal credits,
-        CurrencyUnit currency,
+        Money moneyValue,
         String calculationId,
         Instant createdAt
     ) {
         return new LedgerEntry(entryId, walletId, type, credits,
-            Money.zero(currency), calculationId, Optional.empty(), Optional.empty(), createdAt, Map.of());
+            moneyValue, calculationId, Optional.empty(), Optional.empty(), createdAt, Map.of());
     }
 
     /**

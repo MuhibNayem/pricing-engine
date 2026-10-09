@@ -4,7 +4,6 @@ import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.event.OutboxEvent;
 import com.saas.pricing.core.model.event.OutboxRepository;
 
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,25 +46,30 @@ public class JdbcOutboxRepository implements OutboxRepository {
      *
      * <p>An identical re-enqueue collides on the primary key and is a no-op: a retried transaction
      * writing the same event is not an error. Conflicting content under one id is refused.
+     *
+     * <p>The collision is absorbed through a savepoint ({@link JdbcDuplicateGuard}): catching the
+     * duplicate-key exception and immediately reading the table only works on H2. On PostgreSQL the
+     * failed INSERT aborts the transaction, so the recovery read - and every later statement - would
+     * fail with 25P02.
      */
     @Override
     @Transactional
     public void enqueue(OutboxEvent event) {
         Objects.requireNonNull(event, "event cannot be null");
-        try {
-            // INSERT only. Going through the upsert here would UPDATE an existing row, so the
-            // duplicate-key path would never fire and a conflicting re-enqueue would silently
-            // overwrite the original event instead of being refused.
-            insert(event);
-        } catch (DuplicateKeyException e) {
-            Integer conflicting = jdbcTemplate.queryForObject("""
-                SELECT COUNT(*) FROM outbox_events
-                WHERE event_id = ? AND (payload <> ? OR topic <> ?)
-                """, Integer.class, event.eventId(), event.payload(), event.topic());
-            if (conflicting != null && conflicting > 0) {
-                throw new IllegalArgumentException(
-                    "Outbox event " + event.eventId() + " already queued with different content", e);
-            }
+        // INSERT only. Going through the upsert here would UPDATE an existing row, so the
+        // duplicate-key path would never fire and a conflicting re-enqueue would silently
+        // overwrite the original event instead of being refused.
+        boolean inserted = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () -> insert(event));
+        if (inserted) {
+            return;
+        }
+        Integer conflicting = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*) FROM outbox_events
+            WHERE event_id = ? AND (payload <> ? OR topic <> ?)
+            """, Integer.class, event.eventId(), event.payload(), event.topic());
+        if (conflicting != null && conflicting > 0) {
+            throw new IllegalArgumentException(
+                "Outbox event " + event.eventId() + " already queued with different content");
         }
     }
 

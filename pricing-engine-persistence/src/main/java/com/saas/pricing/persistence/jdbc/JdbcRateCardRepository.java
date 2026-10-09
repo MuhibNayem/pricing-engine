@@ -39,7 +39,8 @@ public class JdbcRateCardRepository implements RateCardRepository {
             WHERE tenant_id = ? AND plan_code = ?
               AND effective_from <= ?
               AND (effective_to IS NULL OR effective_to >= ?)
-              AND (superseded_at IS NULL OR superseded_at > ?)
+              AND recorded_at <= CURRENT_TIMESTAMP
+              AND (superseded_at IS NULL OR superseded_at > CURRENT_TIMESTAMP)
             ORDER BY version DESC
             LIMIT 1
             """;
@@ -47,7 +48,7 @@ public class JdbcRateCardRepository implements RateCardRepository {
         List<String> results = jdbcTemplate.query(
             sql,
             (rs, rowNum) -> rs.getString("payload_json"),
-            tenantId.value(), planCode.value(), effTimestamp, effTimestamp, effTimestamp
+            tenantId.value(), planCode.value(), effTimestamp, effTimestamp
         );
 
         if (results.isEmpty()) {
@@ -102,7 +103,8 @@ public class JdbcRateCardRepository implements RateCardRepository {
             WHERE tenant_id = 'GLOBAL' AND plan_code = ?
               AND effective_from <= ?
               AND (effective_to IS NULL OR effective_to >= ?)
-              AND (superseded_at IS NULL OR superseded_at > ?)
+              AND recorded_at <= CURRENT_TIMESTAMP
+              AND (superseded_at IS NULL OR superseded_at > CURRENT_TIMESTAMP)
             ORDER BY version DESC
             LIMIT 1
             """;
@@ -110,7 +112,7 @@ public class JdbcRateCardRepository implements RateCardRepository {
         List<String> results = jdbcTemplate.query(
             sql,
             (rs, rowNum) -> rs.getString("payload_json"),
-            planCode.value(), effTimestamp, effTimestamp, effTimestamp
+            planCode.value(), effTimestamp, effTimestamp
         );
 
         return results.isEmpty() ? Optional.empty() : Optional.of(PricingJsonMapper.fromJson(results.getFirst(), RateCard.class));

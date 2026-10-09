@@ -7,44 +7,51 @@
 --
 -- WHY THIS IS A SEPARATE FILE
 --
--- It uses PostgreSQL's CREATE RULE, which the H2 build used by the test suite does
--- not implement. V4 is portable and therefore fully exercised by the automated
--- tests; THIS script is verified only against a real PostgreSQL server. It is
--- excluded from the H2 test fixture on purpose rather than silently degraded -
--- see BaseJdbcRepositoryTest, which loads V1-V4 and V6 but not V5.
+-- It uses plpgsql triggers, which the H2 build used by the test suite does not
+-- implement. V4 is portable and therefore fully exercised by the automated
+-- tests; THIS script is verified against real PostgreSQL by PostgresMigrationTest.
 --
--- If you run the suite against H2 you are not testing these rules. The repository
--- implementations refuse to update or delete entries in Java, so the application
--- path is covered; only the defence-in-depth layer is unverified locally.
+-- UPDATE and DELETE raise rather than being silently ignored: a rule that does
+-- nothing makes a mutation look like it succeeded, which is worse for an audit
+-- than an outright refusal.
 -- ==============================================================================
 
-DO $$
+-- An earlier revision of this file created DO INSTEAD NOTHING rules. They are removed rather
+-- than left in place, because silently discarding a write is not the guarantee promised here.
+DROP RULE IF EXISTS wallet_ledger_no_update ON wallet_ledger_entries;
+DROP RULE IF EXISTS wallet_ledger_no_delete ON wallet_ledger_entries;
+
+CREATE OR REPLACE FUNCTION wallet_ledger_reject_mutation() RETURNS trigger AS $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_rules
-        WHERE schemaname = current_schema() AND tablename = 'wallet_ledger_entries'
-    ) THEN
+    RAISE EXCEPTION
+        'wallet_ledger_entries is append-only: % is rejected; corrections are REVERSAL rows',
+        TG_OP;
+END;
+$$ LANGUAGE plpgsql;
 
-        -- Financial history is immutable. Corrections are REVERSAL rows, never an UPDATE.
-        CREATE RULE wallet_ledger_no_update AS
-            ON UPDATE TO wallet_ledger_entries
-            DO INSTEAD NOTHING;
+DROP TRIGGER IF EXISTS trg_wallet_ledger_no_update ON wallet_ledger_entries;
+CREATE TRIGGER trg_wallet_ledger_no_update
+    BEFORE UPDATE ON wallet_ledger_entries
+    FOR EACH ROW EXECUTE FUNCTION wallet_ledger_reject_mutation();
 
-        CREATE RULE wallet_ledger_no_delete AS
-            ON DELETE TO wallet_ledger_entries
-            DO INSTEAD NOTHING;
-
-    END IF;
-END
-$$;
+DROP TRIGGER IF EXISTS trg_wallet_ledger_no_delete ON wallet_ledger_entries;
+CREATE TRIGGER trg_wallet_ledger_no_delete
+    BEFORE DELETE ON wallet_ledger_entries
+    FOR EACH ROW EXECUTE FUNCTION wallet_ledger_reject_mutation();
 
 -- An entry that has already been reversed must not be reversible a second time:
 -- double-reversing would credit a customer money that was never drawn.
+--
+-- Excluding NEW.entry_id is the whole point: this is an AFTER INSERT trigger, so
+-- without the exclusion the row being inserted matches its own EXISTS and EVERY
+-- first reversal is rejected. The equivalent trigger in V11 gets this right.
 CREATE OR REPLACE FUNCTION wallet_ledger_single_reversal() RETURNS trigger AS $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM wallet_ledger_entries
-        WHERE entry_type = 'REVERSAL' AND reverses_entry_id = NEW.reverses_entry_id
+        WHERE entry_type = 'REVERSAL'
+          AND reverses_entry_id = NEW.reverses_entry_id
+          AND entry_id <> NEW.entry_id
     ) THEN
         RAISE EXCEPTION
             'Ledger entry % has already been reversed; a second reversal would credit '
