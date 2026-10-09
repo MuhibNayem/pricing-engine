@@ -1,14 +1,19 @@
 package com.saas.pricing.starter.web;
 
 import com.saas.pricing.core.model.CustomerId;
+import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.model.Money;
+import com.saas.pricing.core.model.PricingRequest;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.subscription.Subscription;
+import com.saas.pricing.starter.EnterprisePricingService;
 import com.saas.pricing.starter.SubscriptionCommandService;
 import com.saas.pricing.starter.SubscriptionLifecycleService;
 import com.saas.pricing.starter.SubscriptionRenewalService;
 import com.saas.pricing.starter.tenant.TenantGuard;
 import com.saas.pricing.starter.web.dto.InvoiceDtos;
+
+import jakarta.validation.Valid;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -41,15 +46,18 @@ public class SubscriptionController {
     private final SubscriptionLifecycleService lifecycle;
     private final SubscriptionRenewalService renewal;
     private final TenantGuard tenantGuard;
+    private final EnterprisePricingService pricingService;
 
     public SubscriptionController(SubscriptionCommandService commands,
                                   SubscriptionLifecycleService lifecycle,
                                   SubscriptionRenewalService renewal,
-                                  TenantGuard tenantGuard) {
+                                  TenantGuard tenantGuard,
+                                  EnterprisePricingService pricingService) {
         this.commands = Objects.requireNonNull(commands, "commands cannot be null");
         this.lifecycle = Objects.requireNonNull(lifecycle, "lifecycle cannot be null");
         this.renewal = Objects.requireNonNull(renewal, "renewal cannot be null");
         this.tenantGuard = Objects.requireNonNull(tenantGuard, "tenantGuard cannot be null");
+        this.pricingService = Objects.requireNonNull(pricingService, "pricingService cannot be null");
     }
 
     @GetMapping("/{subscriptionId}")
@@ -91,12 +99,24 @@ public class SubscriptionController {
     @PostMapping("/{subscriptionId}/cancel")
     public ResponseEntity<InvoiceDtos.SubscriptionDto> cancel(
         @PathVariable String subscriptionId,
-        @RequestBody InvoiceDtos.CancelSubscriptionRequest request
+        @Valid @RequestBody InvoiceDtos.CancelSubscriptionRequest request
     ) {
         var tid = TenantId.of(tenantGuard.verify(request.tenantId()));
+        Subscription existing = commands.require(tid, subscriptionId);
+
+        // The credit is rated from the plan in force, never taken from the request: a client-supplied
+        // price on a money-moving endpoint is a way to mint an arbitrary cancellation credit.
+        Money fullPeriodPrice = pricingService.evaluate(PricingRequest.builder()
+            .tenantId(tid.value())
+            .customerId(existing.customerId().value())
+            .planCode(existing.planCode().value())
+            .targetCurrency(CurrencyUnit.of(request.currency()))
+            .evaluationTime(existing.currentPeriodStart())
+            .item(request.itemCode(), 1)
+            .build()).finalTotal();
+
         var outcome = commands.cancel(tid, subscriptionId, request.atPeriodEnd(),
-            lifecycle, request.itemCode(), Money.of(new java.math.BigDecimal(request.fullPeriodPrice()),
-                com.saas.pricing.core.model.CurrencyUnit.of(request.currency())));
+            lifecycle, request.itemCode(), fullPeriodPrice);
 
         var dto = toDto(outcome.subscription());
         return ResponseEntity.ok(new InvoiceDtos.SubscriptionDto(

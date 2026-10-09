@@ -121,6 +121,21 @@ public class PricingEngineAutoConfiguration {
         return new com.saas.pricing.starter.tenant.TenantGuard(resolver);
     }
 
+    /**
+     * Registers the RFC 9457 error mapper.
+     *
+     * <p>The starter's package is not component-scanned (controllers are declared here too), so a
+     * {@code @RestControllerAdvice} annotation alone registers nothing: every illegal-argument
+     * failure surfaced as a 500 with a stack trace.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "pricing.engine", name = "web-enabled", havingValue = "true",
+            matchIfMissing = true)
+    public com.saas.pricing.starter.web.PricingEngineExceptionHandler pricingEngineExceptionHandler() {
+        return new com.saas.pricing.starter.web.PricingEngineExceptionHandler();
+    }
+
     // =========================================================================
     // 1. SPI Repositories & Storage Adapters (In-Memory or JDBC / PostgreSQL)
     // =========================================================================
@@ -742,10 +757,12 @@ public class PricingEngineAutoConfiguration {
         com.saas.pricing.starter.SubscriptionCommandService subscriptionCommandService,
         com.saas.pricing.starter.SubscriptionLifecycleService subscriptionLifecycleService,
         com.saas.pricing.starter.SubscriptionRenewalService subscriptionRenewalService,
-        com.saas.pricing.starter.tenant.TenantGuard tenantGuard
+        com.saas.pricing.starter.tenant.TenantGuard tenantGuard,
+        EnterprisePricingService enterprisePricingService
     ) {
         return new com.saas.pricing.starter.web.SubscriptionController(
-            subscriptionCommandService, subscriptionLifecycleService, subscriptionRenewalService, tenantGuard);
+            subscriptionCommandService, subscriptionLifecycleService, subscriptionRenewalService,
+            tenantGuard, enterprisePricingService);
     }
 
     /**

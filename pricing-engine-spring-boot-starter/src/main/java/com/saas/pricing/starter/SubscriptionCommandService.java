@@ -9,6 +9,7 @@ import com.saas.pricing.core.model.event.OutboxRepository;
 import com.saas.pricing.core.model.subscription.Subscription;
 import com.saas.pricing.core.spi.SubscriptionRepository;
 
+import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -49,6 +50,7 @@ public class SubscriptionCommandService {
     }
 
     /** Persists a new subscription and announces it. */
+    @Transactional
     public Subscription create(Subscription subscription) {
         repository.create(subscription);
         announce(subscription, "subscription.created");
@@ -59,6 +61,7 @@ public class SubscriptionCommandService {
      * Cancels immediately, or at the period boundary, and announces the outcome including any
      * credit the cancellation produced.
      */
+    @Transactional
     public SubscriptionLifecycleService.Outcome cancel(TenantId tenantId, String subscriptionId,
                                                      boolean atPeriodEnd,
                                                      SubscriptionLifecycleService lifecycle,
@@ -96,6 +99,7 @@ public class SubscriptionCommandService {
     }
 
     /** Pauses a subscription. Refused once terminal, or if already paused, by the aggregate. */
+    @Transactional
     public Subscription pause(TenantId tenantId, String subscriptionId) {
         Subscription paused = require(tenantId, subscriptionId).pause(clock.instant());
         repository.update(paused);
@@ -103,6 +107,7 @@ public class SubscriptionCommandService {
         return paused;
     }
 
+    @Transactional
     public Subscription resume(TenantId tenantId, String subscriptionId) {
         Subscription resumed = require(tenantId, subscriptionId).resume();
         repository.update(resumed);
@@ -111,6 +116,7 @@ public class SubscriptionCommandService {
     }
 
     /** Marks billing as failed so collection can take over. */
+    @Transactional
     public Subscription markPastDue(TenantId tenantId, String subscriptionId) {
         Subscription pastDue = require(tenantId, subscriptionId).markPastDue();
         repository.update(pastDue);
@@ -141,6 +147,7 @@ public class SubscriptionCommandService {
      * @param at the instant the job is running
      * @return one outcome per due subscription, including those that were skipped and why
      */
+    @Transactional
     public List<RenewalOutcome> renewDue(TenantId tenantId, Instant at) {
         List<RenewalOutcome> outcomes = new ArrayList<>();
         for (Subscription due : repository.findDueForRenewal(tenantId, at)) {

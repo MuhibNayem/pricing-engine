@@ -391,4 +391,40 @@ class SpelFormulaEvaluatorDefectTest {
                 .hasMessageContaining("reserved");
         }
     }
+
+    @Nested
+    @DisplayName("DEFECT 4 - the '^' power operator bypasses every bound")
+    class PowerOperator {
+
+        @Test
+        @DisplayName("'^' is rejected and the author is pointed at #pow")
+        void powerOperatorRejected() {
+            // Before: the exponent cap lived only in #pow, and Spring evaluated
+            // `#max(2,1) ^ 999999998` with an exact BigDecimal.pow - a CPU/heap bomb that produced
+            // no result within a 25s watchdog at 512MB.
+            assertThatThrownBy(() -> evaluator.evaluate("#max(2,1) ^ 999999998", Map.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("#pow");
+
+            assertThatThrownBy(() -> evaluator.evaluate("2 ^ 100000", Map.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("#pow");
+        }
+
+        @Test
+        @DisplayName("a '^' inside a string literal is not mistaken for the operator")
+        void caretInsideStringLiteralIsNotRejectedAsPower() {
+            assertThatThrownBy(() -> evaluator.evaluate("'2^3'", Map.of()))
+                .hasMessageNotContaining("'^' operator");
+        }
+
+        @Test
+        @DisplayName("#pow still computes exact bounded powers")
+        void powHelperRemainsAvailable() {
+            assertThat(evaluator.evaluate("#pow(2, 10)", Map.of())).isEqualByComparingTo("1024");
+
+            assertThatThrownBy(() -> evaluator.evaluate("#pow(2, 1000000000)", Map.of()))
+                .hasMessageContaining("exceeds the supported bound");
+        }
+    }
 }

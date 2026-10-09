@@ -105,9 +105,16 @@ public class RetentionService {
             + ",retained=" + report.retained().size()
             + (report.isFullySatisfied() ? "" : ",downgraded=" + report.downgraded());
 
+        // A stable id per execution, derived from what happened and when. A hard-coded sequence
+        // made every run emit the same id: the second execution with a different summary was then
+        // rejected as a conflicting re-enqueue (or silently dropped on JDBC), so the erasure was
+        // never announced. A content-derived id keeps a retry of the SAME execution a no-op.
+        long executionSequence = java.util.Objects.hash(report.evaluatedAt(), summary);
+
         outboxRepository.enqueue(
             com.saas.pricing.core.model.event.OutboxEvent.queued(
-                com.saas.pricing.core.model.event.DomainEventFactory.eventId(TOPIC_RETENTION_EXECUTED, tenantId.value(), 8L),
+                com.saas.pricing.core.model.event.DomainEventFactory.eventId(
+                    TOPIC_RETENTION_EXECUTED, tenantId.value(), executionSequence),
                 report.isFullySatisfied() ? TOPIC_RETENTION_EXECUTED : TOPIC_RETENTION_DOWNGRADED,
                 tenantId.value(),
                 "RETENTION_REQUEST",

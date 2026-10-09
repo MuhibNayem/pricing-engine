@@ -112,8 +112,7 @@ class RetentionServiceTest {
 
     @Test
     @DisplayName("execution is announced, and a downgrade uses its own topic")
-    void executionIsAnnounced() {
-        var actions = new RecordingActions();
+    void executionIsAnnounced() {        var actions = new RecordingActions();
         var outbox = new InMemoryOutboxRepository();
         var service = service(actions, outbox);
 
@@ -147,5 +146,29 @@ class RetentionServiceTest {
 
         assertThat(report.isFullySatisfied()).isTrue();
         assertThat(outbox.findUndelivered(RetentionService.TOPIC_RETENTION_EXECUTED, 10)).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("two different executions are announced as two distinct events")
+    void executionsUseDistinctEventIds() {
+        var actions = new RecordingActions();
+        var outbox = new InMemoryOutboxRepository();
+        var service = service(actions, outbox);
+
+        var first = ErasureDecision.evaluate(ErasureDecision.defaultPolicy(),
+            Map.of(RetentionClass.RecordClass.DIAGNOSTIC, Instant.parse("2020-01-01T00:00:00Z")), NOW);
+        service.execute(first, TENANT, CUSTOMER);
+
+        // Same fixed clock, different outcome (the ledger also reaches its anonymisation point), so
+        // the summaries differ. A hard-coded sequence emitted the same event id for both runs and
+        // the second execution was rejected as a conflicting re-enqueue.
+        var second = ErasureDecision.evaluate(ErasureDecision.defaultPolicy(), Map.of(
+            RetentionClass.RecordClass.DIAGNOSTIC, Instant.parse("2020-01-01T00:00:00Z"),
+            RetentionClass.RecordClass.FINANCIAL_LEDGER, Instant.parse("2018-01-01T00:00:00Z")), NOW);
+        service.execute(second, TENANT, CUSTOMER);
+
+        assertThat(outbox.findByTenant(TENANT, 10))
+            .as("both executions must be announced")
+            .hasSize(2);
     }
 }

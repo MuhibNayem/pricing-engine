@@ -137,7 +137,12 @@ public class EnterprisePricingService {
 
     /**
      * Evaluates a pricing request and automatically applies prepaid credit wallet drawdown if a wallet exists.
+     *
+     * <p>Transactional so the balance update, its ledger entry and the outbox announcement commit
+     * or roll back together when a transaction manager is present; without that, a crash between
+     * them leaves a debit no subscriber was told about - the exact failure the outbox exists for.
      */
+    @org.springframework.transaction.annotation.Transactional
     public WalletDrawdownResult evaluateAndDrawdown(PricingRequest request) {
         PricingResult pricingResult = evaluate(request);
         if (walletRepository == null || walletDrawdownEngine == null || request.customerId().isEmpty()) {
@@ -221,12 +226,24 @@ public class EnterprisePricingService {
      *
      * <p>Used when raising an invoice, so the document is built from figures the engine produced
      * rather than from anything the caller supplied.
+     *
+     * <p>The lookup is tenant-scoped, and a rating already bound to a customer is only returned to
+     * that customer. Without both checks a caller who obtained another tenant's calculation id was
+     * handed that tenant's line items and billed under their tenant.
      */
-    public Optional<PricingResult> findRatingResult(String calculationId) {
+    public java.util.Optional<PricingResult> findRatingResult(TenantId tenantId, CustomerId customerId,
+                                                              String calculationId) {
         if (calculationId == null || calculationId.isBlank()) {
-            return Optional.empty();
+            return java.util.Optional.empty();
         }
-        return Optional.ofNullable(recentResults.get(calculationId));
+        PricingResult result = recentResults.get(calculationId);
+        if (result == null || !result.tenantId().equals(tenantId)) {
+            return java.util.Optional.empty();
+        }
+        if (result.customerId().isPresent() && !result.customerId().get().equals(customerId)) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(result);
     }
 
     private void announceWalletDrawdown(TenantId tenantId, WalletDrawdownResult drawdown,

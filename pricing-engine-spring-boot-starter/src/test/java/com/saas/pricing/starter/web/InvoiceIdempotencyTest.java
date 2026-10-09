@@ -258,6 +258,39 @@ class InvoiceIdempotencyTest {
         contextRunner.run(context -> assertThat(context).hasSingleBean(IdempotencyKeyStore.class));
     }
 
+    /** Registration, not annotation: the starter package is not component-scanned. */
+    @Test
+    @DisplayName("the RFC 9457 error mapper is registered")
+    void exceptionHandlerIsRegistered() {
+        contextRunner.run(context ->
+            assertThat(context).hasSingleBean(PricingEngineExceptionHandler.class));
+    }
+
+    /** IDOR regression: a calculation id must not be usable by another tenant or customer. */
+    @Test
+    @DisplayName("a rating is only returned to the tenant and customer it was computed for")
+    void ratingLookupIsTenantAndCustomerScoped() {
+        contextRunner.withBean(RateCardRepository.class, this::seededRateCards).run(context -> {
+            var service = context.getBean(EnterprisePricingService.class);
+            var calculationId = rate(service);
+
+            assertThat(service.findRatingResult(
+                com.saas.pricing.core.model.TenantId.of("t2"),
+                com.saas.pricing.core.model.CustomerId.of("c1"), calculationId))
+                .as("another tenant's calculation id must not resolve")
+                .isEmpty();
+            assertThat(service.findRatingResult(
+                com.saas.pricing.core.model.TenantId.of("t1"),
+                com.saas.pricing.core.model.CustomerId.of("other"), calculationId))
+                .as("another customer's calculation id must not resolve")
+                .isEmpty();
+            assertThat(service.findRatingResult(
+                com.saas.pricing.core.model.TenantId.of("t1"),
+                com.saas.pricing.core.model.CustomerId.of("c1"), calculationId))
+                .isPresent();
+        });
+    }
+
     /** Field separation, not delimiters: two requests must never fingerprint the same. */
     @Test
     @DisplayName("request fields cannot be shifted between fields to fake a retry")
@@ -267,10 +300,13 @@ class InvoiceIdempotencyTest {
             var service = context.getBean(EnterprisePricingService.class);
             var calculationId = rate(service);
 
-            // "inv-x" + "c1" versus "inv" + "xc1" would collide under a naive delimiter join.
+            // "inv-x" + "PRO" versus "inv" + "xPRO" would collide under a naive delimiter join. The
+            // shift is between fields that do not identify the rating: customer and calculation must
+            // stay intact, because a different customer is now refused before idempotency is even
+            // consulted.
             controller.createDraft(request(calculationId, "inv-x"), "shared");
             var shifted = new InvoiceDtos.CreateInvoiceRequest(
-                "inv", "xc1", "t1", "PRO", calculationId, null,
+                "inv", "c1", "t1", "xPRO", calculationId, null,
                 Instant.parse("2026-10-01T00:00:00Z"), Instant.parse("2026-11-01T00:00:00Z"),
                 "TX_STANDARD");
 

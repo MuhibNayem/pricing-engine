@@ -14,6 +14,8 @@ import com.saas.pricing.metering.model.MeterEvent;
 import com.saas.pricing.metering.model.TimeWindow;
 import com.saas.pricing.starter.EnterprisePricingService;
 import com.saas.pricing.starter.web.dto.PricingDtos;
+import jakarta.validation.Valid;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,6 +37,9 @@ import java.util.Optional;
 @RequestMapping("/api/v1/pricing/meter")
 public class MeteringController {
 
+    /** Bounds the batch ingestion payload; the engine rejects a stream burst without a ceiling. */
+    static final int MAX_BATCH_SIZE = 10_000;
+
     private final UsageMeteringEngine meteringEngine;
     private final EnterprisePricingService pricingService;
     private final com.saas.pricing.starter.tenant.TenantGuard tenantGuard;
@@ -50,7 +55,7 @@ public class MeteringController {
     }
 
     @PostMapping("/events")
-    public ResponseEntity<IngestionResult> ingestEvent(@RequestBody PricingDtos.MeterEventDto dto) {
+    public ResponseEntity<IngestionResult> ingestEvent(@Valid @RequestBody PricingDtos.MeterEventDto dto) {
         MeterEvent event = mapToMeterEvent(dto);
         IngestionResult result = meteringEngine.ingest(event);
         return ResponseEntity.ok(result);
@@ -58,6 +63,13 @@ public class MeteringController {
 
     @PostMapping("/events/batch")
     public ResponseEntity<List<IngestionResult>> ingestBatch(@RequestBody List<PricingDtos.MeterEventDto> dtos) {
+        if (dtos == null || dtos.isEmpty()) {
+            throw new IllegalArgumentException("Batch request cannot be empty");
+        }
+        if (dtos.size() > MAX_BATCH_SIZE) {
+            throw new IllegalArgumentException(
+                "Batch request of " + dtos.size() + " exceeds the maximum of " + MAX_BATCH_SIZE);
+        }
         List<MeterEvent> events = dtos.stream().map(this::mapToMeterEvent).toList();
         List<IngestionResult> results = meteringEngine.ingestBatch(events);
         return ResponseEntity.ok(results);
@@ -89,7 +101,7 @@ public class MeteringController {
 
     @PostMapping("/rate-and-drawdown")
     public ResponseEntity<PricingDtos.WalletDrawdownResponseDto> rateAndDrawdown(
-        @RequestBody PricingDtos.MeterRateAndDrawdownRequestDto request
+        @Valid @RequestBody PricingDtos.MeterRateAndDrawdownRequestDto request
     ) {
         if (pricingService == null) {
             throw new IllegalStateException("EnterprisePricingService is not configured");

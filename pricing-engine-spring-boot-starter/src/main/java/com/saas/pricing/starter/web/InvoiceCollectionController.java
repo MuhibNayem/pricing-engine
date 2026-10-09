@@ -11,6 +11,8 @@ import com.saas.pricing.core.spi.InvoiceRepository;
 import com.saas.pricing.core.spi.PaymentProcessor;
 import com.saas.pricing.starter.tenant.TenantGuard;
 
+import jakarta.validation.Valid;
+
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
@@ -68,7 +70,7 @@ public class InvoiceCollectionController {
     @PostMapping("/invoices/{invoiceId}/collect")
     public ResponseEntity<CollectionResultDto> collect(
         @PathVariable String invoiceId,
-        @RequestBody CollectRequest request
+        @Valid @RequestBody CollectRequest request
     ) {
         TenantId tenantId = TenantId.of(tenantGuard.verify(request.tenantId()));
 

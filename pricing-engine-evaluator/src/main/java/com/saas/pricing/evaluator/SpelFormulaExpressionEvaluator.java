@@ -1,13 +1,10 @@
 package com.saas.pricing.evaluator;
 
 import com.saas.pricing.core.spi.FormulaExpressionEvaluator;
-import org.springframework.core.convert.TypeDescriptor;
 import org.springframework.expression.AccessException;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
-import org.springframework.expression.MethodExecutor;
-import org.springframework.expression.MethodResolver;
 import org.springframework.expression.PropertyAccessor;
 import org.springframework.expression.TypedValue;
 import org.springframework.expression.spel.SpelCompilerMode;
@@ -31,13 +28,12 @@ import java.util.regex.Pattern;
  *
  * <h2>Numeric contract</h2>
  * <ul>
- *   <li><strong>Division.</strong> The {@code /} operator keeps stock SpEL semantics and divides
- *       at scale {@code max(left.scale, right.scale)}, which truncates whole-number operands:
- *       {@code 7 / 2} is {@code 3} and {@code 100 / 3} is {@code 33}. Formula authors must use
- *       the explicit {@code #divide(a, b)} / {@code #divide(a, b, scale)} helpers, which divide
- *       in {@link BigDecimal} at {@code decimal128} precision ({@code 7 / 2} via {@code #divide}
- *       is exactly {@code 3.5}). {@code #divide} is registered under that name because
- *       {@code div} is a reserved SpEL operator token and {@code #div(...)} does not parse.</li>
+ *   <li><strong>Division and power.</strong> {@code /}, {@code div} and {@code ^} are rejected at
+ *       validation. Stock SpEL division truncates whole-number operands ({@code 7 / 2} is
+ *       {@code 3}, {@code 100 / 3} is {@code 33}), and {@code ^} evaluates an exact
+ *       {@link BigDecimal#pow(int)} with no exponent bound, which is a CPU and heap bomb. Formula
+ *       authors use {@code #divide(a, b)} / {@code #divide(a, b, scale)} and
+ *       {@code #pow(base, exponent)} instead; the helpers are BigDecimal-native and bounded.</li>
  *   <li><strong>Precision.</strong> All helpers are BigDecimal-native; see {@link PricingMath}.
  *       Note that SpEL parses decimal <em>literals</em> as {@link Double}, so a literal wider than
  *       ~15 significant digits is already lossy before any helper runs.</li>
@@ -49,9 +45,10 @@ import java.util.regex.Pattern;
  *
  * <h2>Sandbox</h2>
  * Evaluation uses {@link SimpleEvaluationContext}, which blocks {@code T(...)}, {@code new},
- * {@code getClass()}, {@code .class}, bean references and assignment. This class tightens that
- * further: instance-method resolution is denied entirely (only the registered {@code #helpers}
- * are callable), so {@code #x.pow(2000000000)} cannot be reached. Bare identifiers resolve through
+ * {@code getClass()}, {@code .class}, bean references and assignment. Its default method-resolver
+ * list is empty, so instance-method resolution is denied as well (only the registered
+ * {@code #helpers}, bound as {@link Method} variables, are callable) and
+ * {@code #x.pow(2000000000)} cannot be reached. Bare identifiers resolve through
  * an immutable {@link FormulaVariables} holder exposing only the declared {@link BigDecimal}
  * values; a raw {@code Map} root object would instead expose {@code keySet()}, {@code entrySet()}
  * and friends.
@@ -229,14 +226,20 @@ public final class SpelFormulaExpressionEvaluator implements FormulaExpressionEv
                 "Implicit context references (#this / #root) are not supported; "
                     + "reference declared variables by name or with a leading '#'");
         }
-        rejectUnsafeDivision(expression);
+        rejectUnsafeOperators(expression);
     }
 
     /**
-     * Fails fast on {@code /} and {@code div}, skipping string literals so that a literal such as
-     * {@code 'a/b'} is not misread as division.
+     * Fails fast on operators the sandbox cannot execute safely, skipping string literals so that a
+     * literal such as {@code 'a/b'} is not misread.
+     *
+     * <p>{@code /} and {@code div} silently round BigDecimal division to the operands' scale, and
+     * {@code ^} (power) bypasses the exponent cap that {@code #pow} enforces: Spring evaluates a
+     * BigDecimal base with exact {@code BigDecimal.pow}, so {@code #max(2,1) ^ 999999998} is a CPU
+     * and heap bomb that only fails after the fact, if at all. Both are refused and the author is
+     * pointed at the bounded helper instead.
      */
-    private static void rejectUnsafeDivision(String expression) {
+    private static void rejectUnsafeOperators(String expression) {
         boolean inLiteral = false;
         for (int i = 0; i < expression.length(); i++) {
             char c = expression.charAt(i);
@@ -252,6 +255,12 @@ public final class SpelFormulaExpressionEvaluator implements FormulaExpressionEv
                     "The '/' operator silently rounds BigDecimal division to the operands' scale "
                         + "(7 / 2 evaluates to 4). Use #divide(a, b) instead, or #divide(a, b, scale) "
                         + "for an explicit scale.");
+            }
+            if (c == '^') {
+                throw new IllegalArgumentException(
+                    "The '^' operator bypasses the exponent limit (an exact BigDecimal.pow has no "
+                        + "bound). Use #pow(base, exponent) instead; it accepts exponents up to "
+                        + "PricingMath.MAX_POWER_EXPONENT.");
             }
             if ((c == 'd' || c == 'D') && matchesWord(expression, i, "div")) {
                 throw new IllegalArgumentException(
@@ -308,9 +317,10 @@ public final class SpelFormulaExpressionEvaluator implements FormulaExpressionEv
      *   <li>{@link SimpleEvaluationContext} for read-only data binding - no type references
      *       ({@code T(...)}), no constructors ({@code new ...}), no bean resolution ({@code @bean}),
      *       no {@code getClass()} and therefore no {@code classLoader} reach.</li>
-     *   <li>{@link DenyAllMethods} denies every reflective method call, so {@code #x.pow(...)} and
-     *       friends are unreachable. The supported helper functions are bound as variables holding
-     *       a {@link Method}, which keeps them callable through that single narrow channel.</li>
+     *   <li>Reflective method calls are denied by {@link SimpleEvaluationContext} itself: its
+     *       default method-resolver list is empty, so {@code #x.pow(...)} and friends are
+     *       unreachable. The supported helper functions are bound as variables holding a
+     *       {@link Method}, which keeps them callable through that single narrow channel.</li>
      *   <li>The root object is {@link FormulaVariables}, not a {@code Map}, so navigation cannot
      *       reach {@code keySet()} or {@code entrySet()}.</li>
      * </ul>
@@ -399,20 +409,6 @@ public final class SpelFormulaExpressionEvaluator implements FormulaExpressionEv
          * {@code Entry} resolves to the inherited {@link java.util.Map.Entry}, which makes the
          * {@code removeEldestEntry} override fail to override. */
         private record CacheEntry(Expression expression, long createdNanos) {}
-    }
-
-    /**
-     * Denies all instance-method resolution. The registered {@code #helpers} are bound as SpEL
-     * variables holding a {@link Method}, so they remain callable while {@code #x.pow(2000000000)}
-     * and every other reflective method call are unreachable.
-     */
-    private static final class DenyAllMethods implements MethodResolver {
-
-        @Override
-        public MethodExecutor resolve(EvaluationContext context, Object target, String name,
-                                      List<TypeDescriptor> argumentTypes) throws AccessException {
-            throw new AccessException("Method invocation is not permitted in formula evaluation: " + name);
-        }
     }
 
     /**

@@ -13,6 +13,7 @@ import com.saas.pricing.core.model.invoice.Invoice;
 import com.saas.pricing.core.model.invoice.InvoiceNumberService;
 import com.saas.pricing.core.spi.InvoiceRepository;
 
+import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
@@ -58,6 +59,7 @@ public class InvoiceLifecycleService {
      * <p>If the write fails after allocation the number is returned to its series, so a transient
      * error costs the tenant neither a duplicate nor a hole.
      */
+    @Transactional
     public Invoice finalizeInvoice(TenantId tenantId, String invoiceId, String invoiceNumber) {
         Invoice invoice = require(tenantId, invoiceId);
 
@@ -85,6 +87,7 @@ public class InvoiceLifecycleService {
     }
 
     /** Records a payment and announces it. */
+    @Transactional
     public Invoice recordPayment(TenantId tenantId, String invoiceId, String amount) {
         Invoice invoice = require(tenantId, invoiceId);
         Invoice paid = invoice.recordPayment(
@@ -99,6 +102,7 @@ public class InvoiceLifecycleService {
     }
 
     /** Voids an invoice and announces it. */
+    @Transactional
     public Invoice voidInvoice(TenantId tenantId, String invoiceId) {
         Invoice invoice = require(tenantId, invoiceId);
         Invoice voided = invoice.voidInvoice(clock.instant());
@@ -110,6 +114,7 @@ public class InvoiceLifecycleService {
     }
 
     /** Issues a credit note and announces it. */
+    @Transactional
     public CreditNote issueCreditNote(TenantId tenantId, String invoiceId, String creditNoteId,
                                       String reason, String disposition) {
         Invoice invoice = require(tenantId, invoiceId);
@@ -130,6 +135,7 @@ public class InvoiceLifecycleService {
     }
 
     /** Creates a draft, announced under its own topic because it is still editable. */
+    @Transactional
     public Invoice createDraft(Invoice draft) {
         invoiceRepository.createInvoice(draft);
         outboxRepository.enqueue(DomainEventFactory.invoiceDrafted(
@@ -153,6 +159,7 @@ public class InvoiceLifecycleService {
      * @throws IllegalArgumentException if the invoice is already in the functional currency,
      *                                  because no FX booking is then meaningful
      */
+    @Transactional
     public FxBooking bookForeignCurrency(Invoice invoice, CurrencyUnit functionalCurrency,
                                          FxRate estimatedRate) {
         if (invoice.currency().equals(functionalCurrency)) {
@@ -165,6 +172,7 @@ public class InvoiceLifecycleService {
     }
 
     /** Trues a booking up to the realised rate and posts the delta as an FX gain or loss. */
+    @Transactional
     public FxBooking settleForeignCurrency(FxBooking booking, FxRate realizedRate) {
         return booking.settle(realizedRate, clock.instant());
     }
@@ -178,6 +186,7 @@ public class InvoiceLifecycleService {
      *
      * @param recorded effective time of the change; may be earlier than now for a backdated change
      */
+    @Transactional
     public Invoice draftForPlanChange(String invoiceId, TenantId tenantId, CustomerId customerId,
                                       com.saas.pricing.core.model.PlanCode planCode,
                                       com.saas.pricing.core.model.CurrencyUnit currency,

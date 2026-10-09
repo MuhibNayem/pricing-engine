@@ -14,6 +14,8 @@ import com.saas.pricing.core.model.wallet.WalletDrawdownResult;
 import com.saas.pricing.starter.EnterprisePricingService;
 import com.saas.pricing.starter.PricingEngineProperties;
 import com.saas.pricing.starter.web.dto.PricingDtos;
+import jakarta.validation.Valid;
+
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.ResponseEntity;
@@ -37,6 +39,12 @@ import java.util.Map;
 @ConditionalOnProperty(prefix = "pricing.engine", name = "web-enabled", havingValue = "true", matchIfMissing = true)
 public class PricingEngineController {
 
+    /**
+     * A batch is a convenience, not a denial-of-service vector: the batch engine submits one
+     * virtual thread per element, so an unbounded list is an unbounded resource request.
+     */
+    static final int MAX_BATCH_SIZE = 1_000;
+
     private final EnterprisePricingService pricingService;
     private final com.saas.pricing.starter.tenant.TenantGuard tenantGuard;
     private final boolean allowRequestDiscounts;
@@ -58,7 +66,7 @@ public class PricingEngineController {
 
     @PostMapping("/evaluate")
     public ResponseEntity<PricingDtos.PricingEvaluationResponseDto> evaluate(
-        @RequestBody PricingDtos.PricingEvaluationRequestDto requestDto
+        @Valid @RequestBody PricingDtos.PricingEvaluationRequestDto requestDto
     ) {
         PricingRequest request = mapToDomainRequest(requestDto);
         PricingResult result = pricingService.evaluate(request);
@@ -69,6 +77,13 @@ public class PricingEngineController {
     public ResponseEntity<List<PricingDtos.PricingEvaluationResponseDto>> evaluateBatch(
         @RequestBody List<PricingDtos.PricingEvaluationRequestDto> requestDtos
     ) {
+        if (requestDtos == null || requestDtos.isEmpty()) {
+            throw new IllegalArgumentException("Batch request cannot be empty");
+        }
+        if (requestDtos.size() > MAX_BATCH_SIZE) {
+            throw new IllegalArgumentException(
+                "Batch request of " + requestDtos.size() + " exceeds the maximum of " + MAX_BATCH_SIZE);
+        }
         List<PricingRequest> requests = requestDtos.stream().map(this::mapToDomainRequest).toList();
         List<PricingResult> results = pricingService.evaluateBatch(requests);
         return ResponseEntity.ok(results.stream().map(this::mapToResponseDto).toList());
@@ -76,7 +91,7 @@ public class PricingEngineController {
 
     @PostMapping("/entitlements/verify")
     public ResponseEntity<PricingDtos.EntitlementCheckResponseDto> verifyEntitlement(
-        @RequestBody PricingDtos.EntitlementCheckRequestDto dto
+        @Valid @RequestBody PricingDtos.EntitlementCheckRequestDto dto
     ) {
         EntitlementDecision decision = pricingService.verifyEntitlement(
             TenantId.of(tenantGuard.verify(dto.tenantId())),
@@ -100,7 +115,7 @@ public class PricingEngineController {
 
     @PostMapping("/wallets/drawdown")
     public ResponseEntity<PricingDtos.WalletDrawdownResponseDto> drawdown(
-        @RequestBody PricingDtos.WalletDrawdownRequestDto dto
+        @Valid @RequestBody PricingDtos.WalletDrawdownRequestDto dto
     ) {
         PricingRequest.Builder builder = PricingRequest.builder()
             .tenantId(tenantGuard.verify(dto.tenantId()))

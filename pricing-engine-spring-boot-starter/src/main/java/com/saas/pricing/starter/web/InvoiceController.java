@@ -3,6 +3,7 @@ package com.saas.pricing.starter.web;
 import com.saas.pricing.core.model.CustomerId;
 import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.model.Money;
+import com.saas.pricing.core.model.PricingRequest;
 import com.saas.pricing.core.model.PlanCode;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.entitlement.CustomerEntitlement;
@@ -18,6 +19,8 @@ import com.saas.pricing.core.spi.InvoiceRepository;
 import com.saas.pricing.starter.EnterprisePricingService;
 import com.saas.pricing.starter.tenant.TenantGuard;
 import com.saas.pricing.starter.web.dto.InvoiceDtos;
+
+import jakarta.validation.Valid;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -96,7 +99,7 @@ public class InvoiceController {
      */
     @PostMapping("/invoices")
     public ResponseEntity<InvoiceDtos.InvoiceDto> createDraft(
-        @RequestBody InvoiceDtos.CreateInvoiceRequest request,
+        @Valid @RequestBody InvoiceDtos.CreateInvoiceRequest request,
         @RequestHeader("Idempotency-Key") String idempotencyKey
     ) {
         TenantId tenantId = TenantId.of(tenantGuard.verify(request.tenantId()));
@@ -104,10 +107,11 @@ public class InvoiceController {
 
         // Validate before claiming. A request that cannot succeed must not burn the client's key,
         // or a corrected retry would be rejected as a conflict with the failed attempt.
-        var result = pricingService.findRatingResult(request.calculationId())
+        var result = pricingService.findRatingResult(tenantId, customerId, request.calculationId())
             .orElseThrow(() -> new IllegalArgumentException(
                 "No rating result for calculation '" + request.calculationId()
-                    + "'; an invoice must be raised from a computed rating, not from client-supplied amounts"));
+                    + "' for this tenant and customer; an invoice must be raised from a computed "
+                    + "rating, not from client-supplied amounts"));
 
         Invoice draft = InvoiceFactory.draftFrom(result, request.invoiceId(), customerId,
             request.periodStart(), request.periodEnd(), now(), request.taxCode());
@@ -215,29 +219,95 @@ public class InvoiceController {
         return IdempotencyRecord.fingerprintOf(canonical.toString());
     }
 
+    private static String fingerprintOf(InvoiceDtos.PlanChangeRequest request) {
+        StringBuilder canonical = new StringBuilder();
+        for (String field : new String[] {
+            request.invoiceId(), request.tenantId(), request.customerId(), request.planCode(),
+            request.currency(), request.itemCode(), request.oldPlanCode(), request.newPlanCode(),
+            String.valueOf(request.periodStart()), String.valueOf(request.periodEnd()),
+            String.valueOf(request.effectiveAt()), String.valueOf(request.recordedAt()) }) {
+            String value = field == null ? "\u0000" : field;
+            canonical.append(value.length()).append(':').append(value);
+        }
+        return IdempotencyRecord.fingerprintOf(canonical.toString());
+    }
+
     /**
      * Drafts an invoice for a mid-period plan change.
      *
      * <p>Produces the credit/debit pair rather than a single net figure: the customer needs to see
      * which plan they were charged for, and on a downgrade the credit is the money they are owed.
+     *
+     * <p>Both full-period prices are rated by the engine from the rate cards in force at
+     * {@code effectiveAt}. The request carries no prices, because an endpoint that lets a caller
+     * state what a plan costs lets it mint arbitrary credits.
+     *
+     * <p>Like invoice creation, this moves money and therefore requires an {@code Idempotency-Key}.
      */
     @PostMapping("/invoices/plan-change")
     public ResponseEntity<InvoiceDtos.InvoiceDto> draftForPlanChange(
-        @RequestBody InvoiceDtos.PlanChangeRequest request
+        @Valid @RequestBody InvoiceDtos.PlanChangeRequest request,
+        @RequestHeader("Idempotency-Key") String idempotencyKey
     ) {
         TenantId tenantId = TenantId.of(tenantGuard.verify(request.tenantId()));
+        CustomerId customerId = CustomerId.of(request.customerId());
         var currency = CurrencyUnit.of(request.currency());
         Instant recordedAt = request.recordedAt() != null ? request.recordedAt() : Instant.now();
+        Instant effectiveAt = request.effectiveAt();
 
-        var draft = lifecycle.draftForPlanChange(
-            request.invoiceId(), tenantId, CustomerId.of(request.customerId()),
-            PlanCode.of(request.planCode()), currency,
-            request.itemCode(), request.oldPlanCode(), Money.of(request.oldPrice(), currency),
-            request.newPlanCode(), Money.of(request.newPrice(), currency),
-            request.periodStart(), request.periodEnd(),
-            request.effectiveAt(), recordedAt);
+        Money oldPrice = fullPeriodPrice(request.oldPlanCode(), request.itemCode(),
+            tenantId, customerId, currency, effectiveAt);
+        Money newPrice = fullPeriodPrice(request.newPlanCode(), request.itemCode(),
+            tenantId, customerId, currency, effectiveAt);
 
+        IdempotencyDecision decision = idempotencyStore.decide(
+            tenantId, idempotencyKey, fingerprintOf(request), IDEMPOTENCY_TTL, Instant.now());
+        if (decision.action() == IdempotencyDecision.Action.REPLAY) {
+            Invoice replayed = invoiceRepository.findInvoice(tenantId, decision.stored().responseBody())
+                .orElseThrow(() -> new IllegalStateException(
+                    "Idempotency-Key " + idempotencyKey + " records invoice '"
+                        + decision.stored().responseBody() + "', which is no longer retrievable"));
+            return ResponseEntity.status(decision.httpStatus()).body(toDto(replayed));
+        }
+        if (decision.action() == IdempotencyDecision.Action.IN_FLIGHT) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "An identical request is still in progress for this Idempotency-Key");
+        }
+        if (decision.action() == IdempotencyDecision.Action.CONFLICT) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "This Idempotency-Key was already used for a different request body");
+        }
+
+        IdempotencyRecord claim = decision.claim();
+        Invoice draft;
+        try {
+            draft = lifecycle.draftForPlanChange(
+                request.invoiceId(), tenantId, customerId,
+                PlanCode.of(request.planCode()), currency,
+                request.itemCode(), request.oldPlanCode(), oldPrice,
+                request.newPlanCode(), newPrice,
+                request.periodStart(), request.periodEnd(),
+                effectiveAt, recordedAt);
+        } catch (RuntimeException e) {
+            idempotencyStore.release(tenantId, claim);
+            throw e;
+        }
+
+        idempotencyStore.complete(tenantId, claim, HttpStatus.OK.value(), draft.invoiceId());
         return ResponseEntity.ok(toDto(draft));
+    }
+
+    /** Rates one full period of a plan's item at quantity one, in the request currency. */
+    private Money fullPeriodPrice(String planCode, String itemCode, TenantId tenantId,
+                                  CustomerId customerId, CurrencyUnit currency, Instant at) {
+        return pricingService.evaluate(PricingRequest.builder()
+            .tenantId(tenantId.value())
+            .customerId(customerId.value())
+            .planCode(planCode)
+            .targetCurrency(currency)
+            .evaluationTime(at)
+            .item(itemCode, 1)
+            .build()).finalTotal();
     }
 
     /** Finalizes a draft, assigning its document number and freezing its terms. */
@@ -261,7 +331,7 @@ public class InvoiceController {
     public ResponseEntity<InvoiceDtos.InvoiceDto> recordPayment(
         @PathVariable String invoiceId,
         @RequestParam String tenantId,
-        @RequestBody InvoiceDtos.RecordPaymentRequest request
+        @Valid @RequestBody InvoiceDtos.RecordPaymentRequest request
     ) {
         TenantId tid = TenantId.of(tenantGuard.verify(tenantId));
         return ResponseEntity.ok(toDto(lifecycle.recordPayment(tid, invoiceId, request.amount())));
@@ -286,7 +356,7 @@ public class InvoiceController {
     @PostMapping("/invoices/{invoiceId}/credit-notes")
     public ResponseEntity<InvoiceDtos.CreditNoteDto> creditInvoice(
         @PathVariable String invoiceId,
-        @RequestBody InvoiceDtos.CreateCreditNoteRequest request
+        @Valid @RequestBody InvoiceDtos.CreateCreditNoteRequest request
     ) {
         TenantId tid = TenantId.of(tenantGuard.verify(request.tenantId()));
         CreditNote credit = lifecycle.issueCreditNote(tid, invoiceId, request.creditNoteId(),

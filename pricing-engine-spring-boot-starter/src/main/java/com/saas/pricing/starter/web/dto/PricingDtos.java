@@ -1,37 +1,47 @@
 package com.saas.pricing.starter.web.dto;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
+
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
 /**
  * REST API DTOs for the standalone pricing engine endpoints.
+ *
+ * <p>Request DTOs carry Bean Validation constraints, and controllers declare {@code @Valid}. Without
+ * both, a null or negative field travelled into the domain and surfaced as an NPE or a 500 instead
+ * of a 400 naming the offending field.
  */
 public final class PricingDtos {
 
     private PricingDtos() {}
 
     public record ItemDto(
-        String itemCode,
-        BigDecimal quantity,
+        @NotBlank String itemCode,
+        @NotNull @PositiveOrZero BigDecimal quantity,
         Map<String, Object> attributes
     ) {}
 
     public record DiscountDto(
-        String code,
-        String type, // PERCENTAGE or FIXED_AMOUNT
-        BigDecimal value,
-        String scope, // LINE_ITEM or INVOICE_TOTAL
+        @NotBlank String code,
+        @NotBlank String type,
+        @NotNull @PositiveOrZero BigDecimal value,
+        String scope,
         String targetItemCode
     ) {}
 
     public record PricingEvaluationRequestDto(
-        String tenantId,
+        @NotBlank String tenantId,
         String customerId,
-        String planCode,
+        @NotBlank String planCode,
         String targetCurrency,
-        List<ItemDto> items,
-        List<DiscountDto> discounts,
+        @NotEmpty @Valid List<ItemDto> items,
+        @Valid List<DiscountDto> discounts,
         Map<String, Object> attributes
     ) {}
 
@@ -61,10 +71,10 @@ public final class PricingDtos {
     ) {}
 
     public record EntitlementCheckRequestDto(
-        String tenantId,
-        String customerId,
-        String featureKey,
-        BigDecimal requestedUnits
+        @NotBlank String tenantId,
+        @NotBlank String customerId,
+        @NotBlank String featureKey,
+        @NotNull @PositiveOrZero BigDecimal requestedUnits
     ) {}
 
     public record EntitlementCheckResponseDto(
@@ -79,11 +89,11 @@ public final class PricingDtos {
     ) {}
 
     public record WalletDrawdownRequestDto(
-        String tenantId,
+        @NotBlank String tenantId,
         String customerId,
-        String planCode,
+        @NotBlank String planCode,
         String targetCurrency,
-        List<ItemDto> items
+        @NotEmpty @Valid List<ItemDto> items
     ) {}
 
     public record WalletDrawdownResponseDto(
@@ -96,12 +106,12 @@ public final class PricingDtos {
     ) {}
 
     public record MeterEventDto(
-        String eventId,
+        @NotBlank String eventId,
         String idempotencyKey,
-        String tenantId,
+        @NotBlank String tenantId,
         String customerId,
-        String meterCode,
-        BigDecimal value,
+        @NotBlank String meterCode,
+        @NotNull @PositiveOrZero BigDecimal value,
         String timestamp,
         Map<String, Object> properties
     ) {}
@@ -118,11 +128,11 @@ public final class PricingDtos {
     ) {}
 
     public record MeterRateAndDrawdownRequestDto(
-        String tenantId,
+        @NotBlank String tenantId,
         String customerId,
-        String planCode,
+        @NotBlank String planCode,
         String targetCurrency,
-        String windowStart,
-        String windowEnd
+        @NotBlank String windowStart,
+        @NotBlank String windowEnd
     ) {}
 }

@@ -10,6 +10,7 @@ import com.saas.pricing.core.model.event.OutboxRepository;
 import com.saas.pricing.core.spi.EntitlementEventRepository;
 import com.saas.pricing.core.spi.EntitlementRepository;
 
+import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
@@ -49,6 +50,7 @@ public class EntitlementLifecycleService {
     }
 
     /** Grants an entitlement, recording the event and announcing it. */
+    @Transactional
     public EntitlementEvent grant(String eventId, TenantId tenantId, CustomerId customerId,
                                   String featureKey, FeatureType featureType,
                                   Optional<java.math.BigDecimal> quotaLimit, String reason) {
@@ -57,15 +59,25 @@ public class EntitlementLifecycleService {
             eventId, tenantId, customerId, featureKey, featureType, quotaLimit, at, at, reason);
 
         eventRepository.append(java.util.List.of(event));
-        entitlementRepository.saveEntitlement(
-            CustomerEntitlement.booleanEntitlement("ent-" + featureKey, tenantId, customerId,
-                com.saas.pricing.core.model.PlanCode.of(""), featureKey, true, at));
+        // The id is scoped to tenant+customer: "ent-" + featureKey collided in the JDBC store
+        // (whose primary key is entitlement_id) when two customers held the same feature.
+        String entitlementId = "ent-" + tenantId.value() + "-" + customerId.value() + "-" + featureKey;
+        com.saas.pricing.core.model.PlanCode plan = com.saas.pricing.core.model.PlanCode.of("");
+        CustomerEntitlement record = switch (featureType) {
+            case BOOLEAN -> CustomerEntitlement.booleanEntitlement(
+                entitlementId, tenantId, customerId, plan, featureKey, true, at);
+            case METERED_RECURRING, METERED_STATIC -> new CustomerEntitlement(
+                entitlementId, tenantId, customerId, plan, featureKey, featureType, true,
+                quotaLimit, java.math.BigDecimal.ZERO, true, at, java.util.Optional.empty());
+        };
+        entitlementRepository.saveEntitlement(record);
         outboxRepository.enqueue(DomainEventFactory.entitlementGranted(
             tenantId.value(), customerId.value(), featureKey, reason, at));
         return event;
     }
 
     /** Revokes an entitlement, recording the event and announcing it. */
+    @Transactional
     public EntitlementEvent revoke(String eventId, TenantId tenantId, CustomerId customerId,
                                    String featureKey, String reason) {
         Instant at = clock.instant();

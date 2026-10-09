@@ -119,18 +119,15 @@ public class PricingEngineMetrics {
 
     /**
      * Reduces an arbitrary caller-controlled string (for example a feature key) to a bounded,
-     * deterministic token. Distinct inputs map to a bounded number of series instead of one
-     * series each.
+     * deterministic token. EVERY value is hashed: returning short values verbatim allowed a caller
+     * to create one Prometheus series per 48-character feature key, which is a cardinality bomb.
      */
     private static String boundedToken(String value) {
         if (value == null || value.isBlank()) {
             return "unknown";
         }
-        String trimmed = value.trim().toLowerCase(Locale.ROOT);
-        if (trimmed.length() <= MAX_TAG_VALUE_LENGTH) {
-            return trimmed;
-        }
-        return Integer.toHexString(trimmed.hashCode());
+        String normalised = value.trim().toLowerCase(Locale.ROOT);
+        return Integer.toHexString(normalised.hashCode());
     }
 
     /**

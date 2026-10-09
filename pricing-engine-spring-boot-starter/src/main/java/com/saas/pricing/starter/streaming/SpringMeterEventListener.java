@@ -4,12 +4,17 @@ import com.saas.pricing.metering.stream.AsyncRatingTriggerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
-import org.springframework.scheduling.annotation.Async;
 
 import java.util.Objects;
 
 /**
  * Spring event listener handling ingested meter events.
+ *
+ * <p>Handlers run synchronously on the publishing thread. The previous {@code @Async} annotation
+ * was inert (no {@code @EnableAsync} anywhere) and merely misdescribed the behaviour; a host that
+ * wants asynchronous handlers registers one that dispatches, or enables async itself. The rating
+ * trigger is exposed through {@link #getAsyncRatingTriggerService()} for a handler to invoke with
+ * the plan and window the event does not carry.
  */
 public class SpringMeterEventListener {
 
@@ -34,7 +39,6 @@ public class SpringMeterEventListener {
     }
 
     @EventListener
-    @Async
     public void onMeterEventIngested(MeterIngestedApplicationEvent event) {
         Objects.requireNonNull(event, "event cannot be null");
 

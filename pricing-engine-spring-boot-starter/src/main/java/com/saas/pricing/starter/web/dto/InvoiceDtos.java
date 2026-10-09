@@ -1,5 +1,8 @@
 package com.saas.pricing.starter.web.dto;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -18,14 +21,14 @@ public final class InvoiceDtos {
 
     /** Request to turn a rating into a draft invoice. */
     public record CreateInvoiceRequest(
-        String invoiceId,
-        String customerId,
-        String tenantId,
-        String planCode,
-        String calculationId,
+        @NotBlank String invoiceId,
+        @NotBlank String customerId,
+        @NotBlank String tenantId,
+        @NotBlank String planCode,
+        @NotBlank String calculationId,
         String invoiceNumber,
-        Instant periodStart,
-        Instant periodEnd,
+        @NotNull Instant periodStart,
+        @NotNull Instant periodEnd,
         String taxCode
     ) {
     }
@@ -68,15 +71,18 @@ public final class InvoiceDtos {
     }
 
     /** Request to record a payment against an invoice. */
-    public record RecordPaymentRequest(String amount, String currency) {
+    public record RecordPaymentRequest(
+        @NotBlank String amount,
+        @NotBlank String currency
+    ) {
     }
 
     /** Request to issue a credit note against an invoice. */
     public record CreateCreditNoteRequest(
-        String creditNoteId,
-        String reason,
-        String disposition,
-        String tenantId
+        @NotBlank String creditNoteId,
+        @NotBlank String reason,
+        @NotBlank String disposition,
+        @NotBlank String tenantId
     ) {
     }
 
@@ -94,21 +100,19 @@ public final class InvoiceDtos {
     ) {
     }
 
-    /** Request to draft an invoice for a mid-period plan change. */
+    /** Request to draft an invoice for a mid-period plan change. Prices are rated, never supplied. */
     public record PlanChangeRequest(
-        String invoiceId,
-        String tenantId,
-        String customerId,
-        String planCode,
-        String currency,
-        String itemCode,
-        String oldPlanCode,
-        String oldPrice,
-        String newPlanCode,
-        String newPrice,
-        Instant periodStart,
-        Instant periodEnd,
-        Instant effectiveAt,
+        @NotBlank String invoiceId,
+        @NotBlank String tenantId,
+        @NotBlank String customerId,
+        @NotBlank String planCode,
+        @NotBlank String currency,
+        @NotBlank String itemCode,
+        @NotBlank String oldPlanCode,
+        @NotBlank String newPlanCode,
+        @NotNull Instant periodStart,
+        @NotNull Instant periodEnd,
+        @NotNull Instant effectiveAt,
         Instant recordedAt
     ) {
     }
@@ -130,12 +134,11 @@ public final class InvoiceDtos {
     ) {
     }
 
-    /** Request to cancel a subscription. */
+    /** Request to cancel a subscription. The credit is rated from the plan, never supplied. */
     public record CancelSubscriptionRequest(
-        String tenantId,
-        String itemCode,
-        String fullPeriodPrice,
-        String currency,
+        @NotBlank String tenantId,
+        @NotBlank String itemCode,
+        @NotBlank String currency,
         boolean atPeriodEnd
     ) {
     }
