@@ -5,6 +5,7 @@ import com.saas.pricing.core.engine.WalletDrawdownEngine;
 import com.saas.pricing.core.model.BillableItemRequest;
 import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.model.CustomerId;
+import com.saas.pricing.core.model.Money;
 import com.saas.pricing.core.model.PlanCode;
 import com.saas.pricing.core.model.PricingRequest;
 import com.saas.pricing.core.model.PricingResult;
@@ -18,6 +19,7 @@ import com.saas.pricing.metering.model.MeterEvent;
 import com.saas.pricing.metering.model.TimeWindow;
 import com.saas.pricing.metering.spi.impl.InMemoryIdempotencyStore;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -45,7 +47,13 @@ public class AsyncRatingTriggerService implements AutoCloseable {
     private final Optional<WalletRepository> walletRepository;
     private final Optional<WalletDrawdownEngine> walletDrawdownEngine;
     private final ExecutorService executor;
-    private final InMemoryIdempotencyStore ratingIdempotencyStore;
+    /**
+     * Durable memory of what each window has been charged, so a late event charges only the
+     * difference and a restart does not re-charge the window.
+     */
+    private final com.saas.pricing.metering.spi.RatingClaimStore ratingClaimStore;
+    /** In-JVM single-flight: only one thread per window performs the charge in this process. */
+    private final InMemoryIdempotencyStore inFlightCharges = new InMemoryIdempotencyStore();
 
     public AsyncRatingTriggerService(UsageMeteringEngine meteringEngine, PricingEngine pricingEngine) {
         this(meteringEngine, pricingEngine, null, null, Executors.newVirtualThreadPerTaskExecutor());
@@ -75,13 +83,13 @@ public class AsyncRatingTriggerService implements AutoCloseable {
         WalletDrawdownEngine walletDrawdownEngine,
         ExecutorService executor
     ) {
-        this(meteringEngine, pricingEngine, walletRepository, walletDrawdownEngine, executor, new InMemoryIdempotencyStore());
+        this(meteringEngine, pricingEngine, walletRepository, walletDrawdownEngine, executor,
+            new com.saas.pricing.metering.spi.impl.InMemoryRatingClaimStore());
     }
 
     /**
-     * Full constructor allowing a shared idempotency store. When several service instances must not
-     * charge the same window twice, pass the same store instance to all of them (or back it with a
-     * durable implementation in a clustered deployment).
+     * Full constructor. Supply the JDBC claim store in a clustered deployment: it is what makes the
+     * window-charge decision atomic across nodes.
      */
     public AsyncRatingTriggerService(
         UsageMeteringEngine meteringEngine,
@@ -89,14 +97,14 @@ public class AsyncRatingTriggerService implements AutoCloseable {
         WalletRepository walletRepository,
         WalletDrawdownEngine walletDrawdownEngine,
         ExecutorService executor,
-        InMemoryIdempotencyStore ratingIdempotencyStore
+        com.saas.pricing.metering.spi.RatingClaimStore ratingClaimStore
     ) {
         this.meteringEngine = Objects.requireNonNull(meteringEngine, "meteringEngine cannot be null");
         this.pricingEngine = Objects.requireNonNull(pricingEngine, "pricingEngine cannot be null");
         this.walletRepository = Optional.ofNullable(walletRepository);
         this.walletDrawdownEngine = Optional.ofNullable(walletDrawdownEngine);
         this.executor = Objects.requireNonNull(executor, "executor cannot be null");
-        this.ratingIdempotencyStore = Objects.requireNonNull(ratingIdempotencyStore, "ratingIdempotencyStore cannot be null");
+        this.ratingClaimStore = Objects.requireNonNull(ratingClaimStore, "ratingClaimStore cannot be null");
     }
 
     /**
@@ -234,12 +242,25 @@ public class AsyncRatingTriggerService implements AutoCloseable {
         String chargeKey = buildChargeKey(tenantId, customerId, planCode, window, calculationId);
 
         // Claim first: only the winner performs the charge, everyone else awaits its outcome.
+        //
+        // The winner clears its entry as soon as the outcome is known (see below), so a loser can
+        // observe the entry vanishing between its failed claim and its lookup. That is not an error:
+        // the charge already finished, so the loser re-attempts the claim and, failing that, simply
+        // evaluates the window itself. Correctness never depends on winning this race - the durable
+        // claim's compare-and-set does - the in-flight registry only exists to share a concurrent
+        // outcome.
         RatingCharge charge = new RatingCharge();
-        if (!ratingIdempotencyStore.putResultIfAbsent(chargeKey, charge)) {
-            RatingCharge inFlight = ratingIdempotencyStore.findResult(chargeKey, RatingCharge.class)
-                .orElseThrow(() -> new IllegalStateException(
-                    "Rating idempotency claim for key '%s' disappeared while in flight".formatted(chargeKey)
-                ));
+        RatingCharge inFlight = null;
+        boolean registered = false;
+        for (int attempt = 0; attempt < 64 && !registered && inFlight == null; attempt++) {
+            if (inFlightCharges.putResultIfAbsent(chargeKey, charge)) {
+                registered = true;
+            } else {
+                inFlight = inFlightCharges.findResult(chargeKey, RatingCharge.class).orElse(null);
+            }
+        }
+
+        if (inFlight != null) {
             // Unwrap the CompletionException so callers see the original failure.
             return inFlight.outcome().handle((result, error) -> {
                 if (error == null) {
@@ -258,15 +279,29 @@ public class AsyncRatingTriggerService implements AutoCloseable {
             });
         }
 
+        if (!registered) {
+            // Spinning losers fall through here after the bounded attempts. Running the charge on
+            // the caller's thread is safe: the durable claim serialises the delta.
+            return CompletableFuture.completedFuture(
+                performCharge(tenantId, customerId, planCode, window, currency, chargeKey));
+        }
+
+        // The in-flight entry exists only to make concurrent duplicates await the same outcome. As
+        // soon as that outcome is known it is dropped, so a LATER call re-evaluates the window
+        // against the durable claim - which is what turns a late event into a delta charge and a
+        // retry into a zero charge. Leaving the completed future in place made the first charge
+        // permanent and every later call a replay, the under-billing this service exists to stop.
+        charge.outcome().whenComplete((result, error) -> inFlightCharges.removeResult(chargeKey, charge));
+
         try {
             return CompletableFuture.supplyAsync(() -> {
                 try {
-                    WalletDrawdownResult result = performCharge(tenantId, customerId, planCode, window, currency);
+                    WalletDrawdownResult result = performCharge(tenantId, customerId, planCode, window, currency, chargeKey);
                     charge.outcome().complete(result);
                     return result;
                 } catch (RuntimeException | Error e) {
                     // Release the claim on failure so a legitimate retry is not treated as a duplicate.
-                    ratingIdempotencyStore.removeResult(chargeKey, charge);
+                    inFlightCharges.removeResult(chargeKey, charge);
                     charge.outcome().completeExceptionally(e);
                     throw e;
                 }
@@ -275,18 +310,28 @@ public class AsyncRatingTriggerService implements AutoCloseable {
             // The executor can reject the task (e.g. already shut down) before the supplier ever runs.
             // The claim was taken synchronously above, so it must be handed back or the window could
             // never be charged again.
-            ratingIdempotencyStore.removeResult(chargeKey, charge);
+            inFlightCharges.removeResult(chargeKey, charge);
             charge.outcome().completeExceptionally(e);
             throw e;
         }
     }
 
+    /**
+     * Rates the window and draws down only the amount not already charged for it.
+     *
+     * <p>The durable claim is what makes a late event safe: ingest accepts it, the next rating
+     * recomputes a larger total, and the difference between the new total and the recorded one is
+     * charged. The claim is moved with an atomic compare-and-set before the drawdown, so two nodes
+     * rating the same window cannot both charge the same delta - the loser re-reads and charges
+     * zero. A retry after a restart likewise finds the claim and charges nothing.</p>
+     */
     private WalletDrawdownResult performCharge(
         TenantId tenantId,
         CustomerId customerId,
         PlanCode planCode,
         TimeWindow window,
-        CurrencyUnit currency
+        CurrencyUnit currency,
+        String claimKey
     ) {
         List<BillableItemRequest> billableItems = meteringEngine.generateBillableItems(
             tenantId, Optional.of(customerId), window
@@ -301,26 +346,87 @@ public class AsyncRatingTriggerService implements AutoCloseable {
 
         billableItems.forEach(builder::item);
         PricingResult pricingResult = pricingEngine.evaluate(builder.build());
+        Money newTotal = pricingResult.finalTotal();
 
+        while (true) {
+            Optional<com.saas.pricing.metering.spi.RatingClaimStore.Charged> previous =
+                ratingClaimStore.find(tenantId, claimKey);
+            if (previous.isPresent() && !previous.get().currency().equals(currency.code())) {
+                throw new IllegalStateException(
+                    "Rating claim for window %s..%s is recorded in %s but the charge is in %s; "
+                        .formatted(window.startTime(), window.endTime(),
+                            previous.get().currency(), currency.code())
+                        + "convert the claim or the charge before rating");
+            }
+            BigDecimal alreadyCharged = previous
+                .map(com.saas.pricing.metering.spi.RatingClaimStore.Charged::amount)
+                .orElse(BigDecimal.ZERO);
+            BigDecimal difference = newTotal.amount().subtract(alreadyCharged);
+            Money delta = difference.signum() > 0 ? Money.of(difference, currency) : Money.zero(currency);
+
+            com.saas.pricing.metering.spi.RatingClaimStore.Charged updated =
+                new com.saas.pricing.metering.spi.RatingClaimStore.Charged(
+                    newTotal.amount(), currency.code(), window.endTime());
+
+            if (!ratingClaimStore.compareAndSet(tenantId, claimKey, previous, updated)) {
+                // Another node moved the claim first. Re-read and recompute the delta from the new
+                // base instead of charging the stale difference.
+                continue;
+            }
+
+            try {
+                return drawDown(tenantId, customerId, delta, pricingResult, window);
+            } catch (RuntimeException | Error e) {
+                // Hand the claim back so a retry can still charge the delta. Best effort: if another
+                // node has already moved it, this caller's failure is the only one that matters.
+                if (previous.isPresent()) {
+                    ratingClaimStore.compareAndSet(tenantId, claimKey, Optional.of(updated), previous.get());
+                } else {
+                    ratingClaimStore.remove(tenantId, claimKey, updated);
+                }
+                throw e;
+            }
+        }
+    }
+
+    private WalletDrawdownResult drawDown(
+        TenantId tenantId,
+        CustomerId customerId,
+        Money amountToDraw,
+        PricingResult pricingResult,
+        TimeWindow window
+    ) {
         WalletRepository repo = walletRepository.get();
         WalletDrawdownEngine engine = walletDrawdownEngine.get();
 
-        Wallet wallet = repo.findWallet(tenantId, customerId)
-            .orElseThrow(() -> new IllegalStateException(
+        // Balance write and ledger rows must commit together. A find/save pair loses concurrent
+        // charges (last write wins) and leaves a debit with no ledger row if the process dies
+        // between the two calls; updateAtomicallyAndRecord serialises per wallet and records inside
+        // the same unit of work.
+        var atomicDrawdown = new java.util.concurrent.atomic.AtomicReference<WalletDrawdownResult>();
+        var transactions = new java.util.ArrayList<com.saas.pricing.core.model.wallet.DrawdownTransaction>();
+
+        var updated = repo.updateAtomicallyAndRecord(tenantId, customerId,
+            wallet -> {
+                WalletDrawdownResult drawdown = engine.applyDrawdown(
+                    wallet,
+                    pricingResult.calculationId(),
+                    amountToDraw,
+                    window.endTime()
+                );
+                atomicDrawdown.set(drawdown);
+                transactions.clear();
+                transactions.addAll(drawdown.transactions());
+                return drawdown.updatedWallet();
+            },
+            transactions);
+
+        if (updated.isEmpty()) {
+            throw new IllegalStateException(
                 "No wallet found for customer '%s' in tenant '%s'".formatted(customerId.value(), tenantId.value())
-            ));
-
-        WalletDrawdownResult drawdownResult = engine.applyDrawdown(
-            wallet,
-            pricingResult.calculationId(),
-            pricingResult.finalTotal(),
-            window.endTime()
-        );
-
-        repo.save(drawdownResult.updatedWallet());
-        repo.recordTransactions(drawdownResult.transactions());
-
-        return drawdownResult;
+            );
+        }
+        return atomicDrawdown.get();
     }
 
     /**
@@ -374,22 +480,18 @@ public class AsyncRatingTriggerService implements AutoCloseable {
             throw new IllegalArgumentException("Event must have a customerId to apply wallet drawdown");
         }
 
-        return CompletableFuture.supplyAsync(() -> {
-            IngestionResult ingestionResult = meteringEngine.ingest(event);
-            if (!ingestionResult.isAccepted()) {
-                return Optional.empty();
-            }
-
-            WalletDrawdownResult drawdownResult = aggregateRateAndDrawdownAsync(
-                event.tenantId(),
-                event.customerId().get(),
-                planCode,
-                window,
-                currency
-            ).join();
-
-            return Optional.of(drawdownResult);
-        }, executor);
+        return CompletableFuture.supplyAsync(() -> meteringEngine.ingest(event), executor)
+            .thenCompose(ingestionResult -> {
+                if (!ingestionResult.isAccepted()) {
+                    return CompletableFuture.completedFuture(Optional.empty());
+                }
+                // Chained, never join()ed: joining an inner task submitted to the same executor
+                // deadlocks a bounded pool (pool size 1 deadlocks trivially) and starves larger
+                // ones. Composition also means no worker thread ever waits on another task.
+                return aggregateRateAndDrawdownAsync(
+                        event.tenantId(), event.customerId().get(), planCode, window, currency)
+                    .thenApply(Optional::of);
+            });
     }
 
     /**

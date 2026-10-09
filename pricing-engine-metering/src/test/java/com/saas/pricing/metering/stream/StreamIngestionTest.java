@@ -320,4 +320,32 @@ class StreamIngestionTest {
         MeterAggregation agg = meteringEngine.aggregate(tenantId, Optional.of(customerId), "BYTES_SENT", window);
         assertThat(agg.aggregatedValue()).isEqualByComparingTo("150");
     }
+
+    @Test
+    @DisplayName("a message without a value is rejected, never silently billed as one unit")
+    void missingValueIsRejected() {
+        StreamMessageConverter converter = new StreamMessageConverter();
+        var map = new java.util.HashMap<String, Object>();
+        map.put("tenantId", "tenant_stream");
+        map.put("meterCode", "BYTES_SENT");
+        map.put("timestamp", "2026-10-08T12:15:00Z");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> converter.fromMap(map))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("no 'value'");
+    }
+
+    @Test
+    @DisplayName("a message without a timestamp is rejected, never assigned to the current window")
+    void missingTimestampIsRejected() {
+        StreamMessageConverter converter = new StreamMessageConverter();
+        var map = new java.util.HashMap<String, Object>();
+        map.put("tenantId", "tenant_stream");
+        map.put("meterCode", "BYTES_SENT");
+        map.put("value", 10);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> converter.fromMap(map))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("no 'timestamp'");
+    }
 }

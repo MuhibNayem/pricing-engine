@@ -96,7 +96,20 @@ public class PricingEngineProperties {
 
     public static class MeteringProperties {
         private boolean enabled = true;
-        private Long allowedLatenessSeconds = null;
+
+        /**
+         * Maximum event lateness accepted, in seconds. Defaults to seven days rather than
+         * "unbounded": with no watermark, an arbitrarily old event is accepted and silently
+         * re-cuts a window that may already have been billed. Set {@code -1} to accept any age.
+         */
+        private Long allowedLatenessSeconds = 604_800L;
+
+        /**
+         * When true (the default), rating refuses to bill a window whose DISTINCT_COUNT exceeded its
+         * cardinality cap, because the stored value is a lower bound. Set false only for deployments
+         * that accept an undercount.
+         */
+        private boolean refuseApproximateAggregations = true;
 
         public boolean isEnabled() {
             return enabled;
@@ -112,6 +125,14 @@ public class PricingEngineProperties {
 
         public void setAllowedLatenessSeconds(Long allowedLatenessSeconds) {
             this.allowedLatenessSeconds = allowedLatenessSeconds;
+        }
+
+        public boolean isRefuseApproximateAggregations() {
+            return refuseApproximateAggregations;
+        }
+
+        public void setRefuseApproximateAggregations(boolean refuseApproximateAggregations) {
+            this.refuseApproximateAggregations = refuseApproximateAggregations;
         }
     }
 

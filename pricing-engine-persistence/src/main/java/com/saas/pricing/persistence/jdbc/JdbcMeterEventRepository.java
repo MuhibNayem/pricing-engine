@@ -61,33 +61,47 @@ public class JdbcMeterEventRepository implements MeterEventRepository, Idempoten
     }
 
     /**
-     * Atomically claims an idempotency key.
+     * Atomically claims an idempotency key, remembering the content it was claimed for.
      *
-     * <p>This used to be a {@code SELECT COUNT(*)} against {@code meter_events} that recorded
-     * nothing. Two concurrent callers both saw "not present", both were admitted, and only the
-     * unique constraint on {@code meter_events} saved the system from a double charge. The store's
-     * own answer was wrong even though the system as a whole happened to be protected.
+     * <p>The claim itself is the atomic operation: an INSERT into {@code meter_idempotency_keys}
+     * succeeds (we own the key) or the key already exists. The stored fingerprint then distinguishes
+     * a retry (identical content, DUPLICATE) from a key reused for different content (CONFLICT),
+     * which used to be silently answered as a duplicate and dropped a real event.</p>
      *
-     * <p>Now the claim itself is the atomic operation: an INSERT into
-     * {@code meter_idempotency_keys} succeeds (we own the key) or violates the primary key (we do
-     * not). Plain INSERT is used rather than {@code ON CONFLICT DO NOTHING} because the latter is
-     * rejected by the H2 version the test suite runs against, even in PostgreSQL emulation mode.
-     *
-     * @return true if this caller claimed the key
+     * <p>The collision is absorbed with a savepoint ({@link JdbcDuplicateGuard}) because the naive
+     * catch-then-read only works on H2; PostgreSQL aborts the transaction on the failed INSERT.</p>
      */
     @Override
-    public boolean checkAndRecord(TenantId tenantId, String idempotencyKey, Instant eventTime) {
+    public IdempotencyStore.Claim claim(TenantId tenantId, String idempotencyKey,
+                                        String fingerprint, Instant eventTime) {
         Objects.requireNonNull(tenantId, "tenantId cannot be null");
         Objects.requireNonNull(idempotencyKey, "idempotencyKey cannot be null");
+        String content = fingerprint == null ? "" : fingerprint;
+        Instant recordedAt = eventTime != null ? eventTime : Instant.now();
 
-        String sql = "INSERT INTO meter_idempotency_keys (tenant_id, idempotency_key, recorded_at) VALUES (?, ?, ?)";
-        try {
-            return jdbcTemplate.update(sql, tenantId.value(), idempotencyKey,
-                    Timestamp.from(eventTime != null ? eventTime : Instant.now())) > 0;
-        } catch (DataIntegrityViolationException e) {
-            // Someone else already holds the key.
-            return false;
+        boolean inserted = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () ->
+            jdbcTemplate.update(
+                "INSERT INTO meter_idempotency_keys (tenant_id, idempotency_key, fingerprint, recorded_at) "
+                    + "VALUES (?, ?, ?, ?)",
+                tenantId.value(), idempotencyKey, content, Timestamp.from(recordedAt)));
+        if (inserted) {
+            return IdempotencyStore.Claim.CLAIMED;
         }
+
+        String stored = jdbcTemplate.query(
+            "SELECT fingerprint FROM meter_idempotency_keys WHERE tenant_id = ? AND idempotency_key = ?",
+            rs -> rs.next() ? rs.getString(1) : null,
+            tenantId.value(), idempotencyKey);
+        if (stored == null) {
+            // Released between the collision and the read: one retry of the claim is safe.
+            boolean retried = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () ->
+                jdbcTemplate.update(
+                    "INSERT INTO meter_idempotency_keys (tenant_id, idempotency_key, fingerprint, recorded_at) "
+                        + "VALUES (?, ?, ?, ?)",
+                    tenantId.value(), idempotencyKey, content, Timestamp.from(recordedAt)));
+            return retried ? IdempotencyStore.Claim.CLAIMED : IdempotencyStore.Claim.DUPLICATE;
+        }
+        return stored.equals(content) ? IdempotencyStore.Claim.DUPLICATE : IdempotencyStore.Claim.CONFLICT;
     }
 
     /**

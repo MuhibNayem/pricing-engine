@@ -160,12 +160,13 @@ class AggregationSemanticsRegressionTest {
     }
 
     @Test
-    @DisplayName("MAX returns the stored maximum, not a high-water mark ratcheted up by duplicate replay")
+    @DisplayName("MAX returns the stored maximum and a replayed event with changed content is a conflict")
     void maxIsStoredMaxNotHighWaterMarkOnReplay() {
         engine.ingest(event("mhw", "MAX_METER", "5", baseTime.plusSeconds(1)));
 
-        // Replay the same identity carrying a higher value: it must be rejected as a duplicate
-        // and must NOT ratchet the stored maximum up to 99.
+        // Replay the same identity carrying a higher value: the content no longer matches the claim,
+        // so it is a CONFLICT - not a silent duplicate, and not an accepted event that ratchets the
+        // stored maximum up to 99.
         MeterEvent replay = MeterEvent.builder()
             .eventId("mhw")
             .idempotencyKey("idem_mhw")
@@ -175,7 +176,9 @@ class AggregationSemanticsRegressionTest {
             .value(new BigDecimal("99"))
             .timestamp(baseTime.plusSeconds(1))
             .build();
-        assertThat(engine.ingest(replay).isDuplicate()).isTrue();
+        assertThat(engine.ingest(replay).isConflict())
+            .as("same key, different value is a caller error the store must surface")
+            .isTrue();
 
         // Repeat the replay once more with a different timestamp to be sure.
         assertThat(engine.ingest(MeterEvent.builder()
@@ -186,7 +189,7 @@ class AggregationSemanticsRegressionTest {
             .meterCode("MAX_METER")
             .value(new BigDecimal("99"))
             .timestamp(baseTime.plusSeconds(2))
-            .build()).isDuplicate()).isTrue();
+            .build()).isConflict()).isTrue();
 
         MeterAggregation aggregation = engine.aggregate(tenantId, Optional.of(customerId), "MAX_METER", window);
         assertThat(aggregation.aggregatedValue()).isEqualByComparingTo("5");

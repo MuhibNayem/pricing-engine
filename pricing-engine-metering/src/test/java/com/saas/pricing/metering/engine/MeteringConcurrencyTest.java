@@ -156,17 +156,29 @@ class MeteringConcurrencyTest {
         assertThat(walletRepository.findTransactions("w_conc")).hasSize(1);
         assertThat(updated.grants().getFirst().remainingCredits()).isEqualByComparingTo("97.00");
 
-        // Every caller must have received the very same original result.
-        var original = results.getFirst();
+        // Every caller either shared the winner's drawdown object - callers that joined while it was
+        // still in flight - or, arriving after completion, observed a zero additional charge against
+        // the durable claim. The single ledger entry above is what proves the charge happened once:
+        // a non-zero result must be the very same shared object, never a second drawdown.
+        var chargedResults = results.stream()
+            .filter(result -> result.totalCreditsDrawn().signum() != 0)
+            .toList();
+        assertThat(chargedResults).isNotEmpty();
+        var winner = chargedResults.getFirst();
+        assertThat(winner.totalCreditsDrawn()).isEqualByComparingTo("3.00");
+        for (var result : chargedResults) {
+            assertThat(result).isSameAs(winner);
+        }
         for (var result : results) {
-            assertThat(result).isSameAs(original);
-            assertThat(result.totalCreditsDrawn()).isEqualByComparingTo("3.00");
+            if (result.totalCreditsDrawn().signum() == 0) {
+                assertThat(result.transactions()).isEmpty();
+            }
         }
     }
 
     @Test
-    @DisplayName("Sequential repeat of the same window charge is also deduplicated and returns the original result")
-    void sequentialRepeatChargeReturnsOriginalResult() {
+    @DisplayName("A sequential repeat of the same window performs no additional charge")
+    void sequentialRepeatChargeIsFree() {
         TimeWindow window = TimeWindow.of(baseTime, baseTime.plus(Duration.ofHours(1)));
         engine.ingest(event("evt_seq", "idem_seq", "BYTES_SENT", "300", baseTime.plusSeconds(30)));
 
@@ -177,8 +189,11 @@ class MeteringConcurrencyTest {
             .aggregateRateAndDrawdownAsync(tenantId, customerId, planCode, window, CurrencyUnit.USD)
             .join();
 
+        assertThat(first.totalCreditsDrawn()).isEqualByComparingTo("3.00");
+        assertThat(second.totalCreditsDrawn())
+            .as("the durable claim already records the full window charge")
+            .isEqualByComparingTo("0");
         assertThat(walletRepository.findTransactions("w_conc")).hasSize(1);
-        assertThat(second).isSameAs(first);
         assertThat(walletRepository.findWallet(tenantId, customerId).orElseThrow()
             .grants().getFirst().remainingCredits()).isEqualByComparingTo("97.00");
     }
@@ -295,10 +310,11 @@ class MeteringConcurrencyTest {
             case ACCEPTED -> IngestionOutcome.ACCEPTED;
             case DUPLICATE -> IngestionOutcome.DUPLICATE;
             case REJECTED_LATE -> IngestionOutcome.REJECTED;
+            case CONFLICT -> IngestionOutcome.CONFLICT;
         };
     }
 
-    private enum IngestionOutcome { ACCEPTED, DUPLICATE, REJECTED }
+    private enum IngestionOutcome { ACCEPTED, DUPLICATE, REJECTED, CONFLICT }
 
     private MeterEvent event(String eventId, String idempotencyKey, String meterCode, String value, Instant ts) {
         return MeterEvent.builder()

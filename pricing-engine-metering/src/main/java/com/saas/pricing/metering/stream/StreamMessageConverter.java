@@ -44,20 +44,39 @@ public class StreamMessageConverter {
         String idempotencyKey = map.get("idempotencyKey") != null ? map.get("idempotencyKey").toString() : null;
         String customerIdStr = map.get("customerId") != null ? map.get("customerId").toString() : null;
 
-        BigDecimal value = BigDecimal.ONE;
+        BigDecimal value;
         Object valObj = map.get("value");
-        if (valObj instanceof Number n) {
+        if (valObj == null) {
+            // A missing quantity used to be silently billed as ONE. The wrong quantity is worse
+            // than a rejected message: it prices, invoices and settles without anyone noticing.
+            throw new IllegalArgumentException(
+                "Stream message for meter '" + meterCode + "' has no 'value'; the quantity is "
+                    + "required and is never assumed");
+        } else if (valObj instanceof Number n) {
             value = new BigDecimal(n.toString());
         } else if (valObj instanceof String s && !s.isBlank()) {
             value = new BigDecimal(s);
+        } else {
+            throw new IllegalArgumentException(
+                "Stream message for meter '" + meterCode + "' has an unusable 'value': " + valObj);
         }
 
-        Instant timestamp = Instant.now();
         Object tsObj = map.get("timestamp");
-        if (tsObj instanceof String s && !s.isBlank()) {
+        if (tsObj == null || (tsObj instanceof String s && s.isBlank())) {
+            // Defaulting to now() assigned usage to whatever window the message happened to arrive
+            // in, bypassing the injected clock and the caller's own watermarks.
+            throw new IllegalArgumentException(
+                "Stream message for meter '" + meterCode + "' has no 'timestamp'; the event time is "
+                    + "required because it decides which billing window the usage belongs to");
+        }
+        Instant timestamp;
+        if (tsObj instanceof String s) {
             timestamp = Instant.parse(s);
         } else if (tsObj instanceof Number n) {
             timestamp = Instant.ofEpochMilli(n.longValue());
+        } else {
+            throw new IllegalArgumentException(
+                "Stream message for meter '" + meterCode + "' has an unusable 'timestamp': " + tsObj);
         }
 
         Map<String, Object> properties = Map.of();

@@ -13,6 +13,7 @@ import com.saas.pricing.metering.spi.IdempotencyStore;
 import com.saas.pricing.metering.spi.MeterAggregationRepository;
 import com.saas.pricing.metering.spi.MeterDefinitionRepository;
 import com.saas.pricing.metering.spi.MeterEventRepository;
+import com.saas.pricing.metering.spi.MeterLockRegistry;
 import com.saas.pricing.metering.spi.impl.InMemoryIdempotencyStore;
 import com.saas.pricing.metering.spi.impl.InMemoryMeterAggregationRepository;
 import com.saas.pricing.metering.spi.impl.InMemoryMeterDefinitionRepository;
@@ -29,7 +30,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.Lock;
 import java.util.stream.Collectors;
 
 /**
@@ -58,6 +59,7 @@ public class DefaultUsageMeteringEngine implements UsageMeteringEngine {
     private final Optional<Duration> allowedLateness;
     private final Clock clock;
     private final int maxDistinctCountCardinality;
+    private final boolean refuseApproximateAggregations;
     private final MeterLockRegistry lockRegistry;
 
     public DefaultUsageMeteringEngine() {
@@ -116,6 +118,47 @@ public class DefaultUsageMeteringEngine implements UsageMeteringEngine {
         Clock clock,
         int maxDistinctCountCardinality
     ) {
+        this(idempotencyStore, eventRepository, aggregationRepository, definitionRepository,
+            allowedLateness, clock, maxDistinctCountCardinality, true);
+    }
+
+    /**
+     * @param refuseApproximateAggregations when true (the default), rating refuses to bill a window
+     *        whose DISTINCT_COUNT exceeded the cardinality cap. The stored value is a lower bound,
+     *        so billing it undercharges silently; a loud failure is recovered by raising the cap or
+     *        fixing the meter, neither of which a wrong invoice can be.
+     */
+    public DefaultUsageMeteringEngine(
+        IdempotencyStore idempotencyStore,
+        MeterEventRepository eventRepository,
+        MeterAggregationRepository aggregationRepository,
+        MeterDefinitionRepository definitionRepository,
+        Optional<Duration> allowedLateness,
+        Clock clock,
+        int maxDistinctCountCardinality,
+        boolean refuseApproximateAggregations
+    ) {
+        this(idempotencyStore, eventRepository, aggregationRepository, definitionRepository,
+            allowedLateness, clock, maxDistinctCountCardinality, refuseApproximateAggregations,
+            new StripedMeterLockRegistry());
+    }
+
+    /**
+     * @param lockRegistry mutual exclusion for the aggregation cache. Supply a database-backed
+     *        implementation when several nodes share the same stores; the in-JVM stripe registry
+     *        cannot stop two nodes from re-saving the same window.
+     */
+    public DefaultUsageMeteringEngine(
+        IdempotencyStore idempotencyStore,
+        MeterEventRepository eventRepository,
+        MeterAggregationRepository aggregationRepository,
+        MeterDefinitionRepository definitionRepository,
+        Optional<Duration> allowedLateness,
+        Clock clock,
+        int maxDistinctCountCardinality,
+        boolean refuseApproximateAggregations,
+        MeterLockRegistry lockRegistry
+    ) {
         this.idempotencyStore = Objects.requireNonNull(idempotencyStore, "idempotencyStore cannot be null");
         this.eventRepository = Objects.requireNonNull(eventRepository, "eventRepository cannot be null");
         this.aggregationRepository = Objects.requireNonNull(aggregationRepository, "aggregationRepository cannot be null");
@@ -126,7 +169,8 @@ public class DefaultUsageMeteringEngine implements UsageMeteringEngine {
             throw new IllegalArgumentException("maxDistinctCountCardinality must be positive");
         }
         this.maxDistinctCountCardinality = maxDistinctCountCardinality;
-        this.lockRegistry = new MeterLockRegistry();
+        this.refuseApproximateAggregations = refuseApproximateAggregations;
+        this.lockRegistry = Objects.requireNonNull(lockRegistry, "lockRegistry cannot be null");
     }
 
     @Override
@@ -151,17 +195,30 @@ public class DefaultUsageMeteringEngine implements UsageMeteringEngine {
         // 2. Claim the idempotency key, persist, and invalidate the cache atomically w.r.t. aggregation.
         //    Holding the same (tenant, meter) stripe as aggregate() prevents an ingest from being
         //    masked by a stale aggregation cache re-save.
-        ReentrantLock lock = lockRegistry.lockFor(event.tenantId(), event.meterCode());
+        Lock lock = lockRegistry.lockFor(event.tenantId(), event.meterCode());
         lock.lock();
         try {
-            // 2. Idempotency Check
+            // 2. Content-aware idempotency claim. Same key + same content is a retry (DUPLICATE);
+            //    same key + different content is a caller error (CONFLICT) that must not be answered
+            //    with a silent "duplicate" - the event would be billed as if recorded.
             Instant recordedAt = event.timestamp();
-            boolean isNew = idempotencyStore.checkAndRecord(event.tenantId(), event.idempotencyKey(), recordedAt);
-            if (!isNew) {
+            IdempotencyStore.Claim claim = idempotencyStore.claim(
+                event.tenantId(), event.idempotencyKey(), fingerprintOf(event), recordedAt);
+            if (claim == IdempotencyStore.Claim.DUPLICATE) {
                 return IngestionResult.duplicate(event.eventId(), event.idempotencyKey());
             }
+            if (claim == IdempotencyStore.Claim.CONFLICT) {
+                return IngestionResult.conflict(event.eventId(), event.idempotencyKey(),
+                    "the key is already recorded for a different meter, customer, value or timestamp");
+            }
 
-            // 3. Persist Event. If the repository throws, the key we just consumed must be released,
+            // 3. Invalidate BEFORE persisting. A crash between the two then leaves the cache empty
+            //    and the event absent, and the next aggregation recomputes the same correct value;
+            //    the reverse order can leave a saved event masked by a stale cache indefinitely.
+            aggregationRepository.invalidateForEvent(
+                event.tenantId(), event.customerId(), event.meterCode(), event.timestamp());
+
+            // 4. Persist Event. If the repository throws, the key we just consumed must be released,
             //    otherwise a legitimate retry is rejected as a duplicate forever.
             boolean saved;
             try {
@@ -177,12 +234,36 @@ public class DefaultUsageMeteringEngine implements UsageMeteringEngine {
                 return IngestionResult.duplicate(event.eventId(), event.idempotencyKey());
             }
 
-            // 4. Invalidate any existing cached aggregation covering this event timestamp
-            aggregationRepository.invalidateForEvent(event.tenantId(), event.customerId(), event.meterCode(), event.timestamp());
-
             return IngestionResult.accepted(event.eventId(), event.idempotencyKey());
         } finally {
             lock.unlock();
+        }
+    }
+
+    /**
+     * Canonical content digest of an event, used to tell a retry from a key collision.
+     *
+     * <p>The event id is deliberately excluded: a retrying client may regenerate it while reusing
+     * the idempotency key, and that is still the same delivery. Meter, customer, value, timestamp
+     * and sorted properties are the content that decides what would be billed.</p>
+     */
+    private static String fingerprintOf(MeterEvent event) {
+        StringBuilder canonical = new StringBuilder()
+            .append(event.tenantId().value()).append('|')
+            .append(event.customerId().map(CustomerId::value).orElse("")).append('|')
+            .append(event.meterCode()).append('|')
+            .append(event.value().stripTrailingZeros().toPlainString()).append('|')
+            .append(event.timestamp()).append('|');
+        event.properties().entrySet().stream()
+            .sorted(java.util.Map.Entry.comparingByKey())
+            .forEach(entry -> canonical.append(entry.getKey()).append('=')
+                .append(entry.getValue()).append(';'));
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(canonical.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 must be available on every Java platform", e);
         }
     }
 
@@ -219,7 +300,7 @@ public class DefaultUsageMeteringEngine implements UsageMeteringEngine {
         // The whole cache-aside read-modify-write runs under the meter stripe lock shared with
         // ingest(). Without it, an event arriving between the cache read and the cache write is
         // masked by the stale re-save and the window is under-billed from then on.
-        ReentrantLock lock = lockRegistry.lockFor(tenantId, meterCode);
+        Lock lock = lockRegistry.lockFor(tenantId, meterCode);
         lock.lock();
         try {
             // Check cached aggregation first
@@ -345,6 +426,21 @@ public class DefaultUsageMeteringEngine implements UsageMeteringEngine {
     @Override
     public List<BillableItemRequest> generateBillableItems(TenantId tenantId, Optional<CustomerId> customerId, TimeWindow window) {
         List<MeterAggregation> aggregations = aggregateAll(tenantId, customerId, window);
+        if (refuseApproximateAggregations) {
+            for (MeterAggregation aggregation : aggregations) {
+                if (aggregation.isApproximate()) {
+                    // The value is a capped undercount. Billing it charges less than owed and nothing
+                    // downstream can tell; refusing makes the operator raise the cap or fix the meter.
+                    throw new IllegalStateException(
+                        ("Refusing to bill an approximate aggregation: meter '%s' for %s/%s over %s "
+                            + "exceeded its DISTINCT_COUNT cardinality cap, so its value %s is a lower "
+                            + "bound. Raise maxDistinctCountCardinality or disable the refusal explicitly.")
+                            .formatted(aggregation.meterCode(), tenantId.value(),
+                                customerId.map(CustomerId::value).orElse("*"),
+                                window, aggregation.aggregatedValue().toPlainString()));
+                }
+            }
+        }
         return aggregations.stream()
             .map(MeterAggregation::toBillableItemRequest)
             .toList();

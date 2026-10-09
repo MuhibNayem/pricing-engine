@@ -18,6 +18,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,6 +37,10 @@ class DistinctCountCardinalityTest {
     private final TimeWindow window = TimeWindow.of(baseTime, baseTime.plus(Duration.ofHours(1)));
 
     private DefaultUsageMeteringEngine engineWith(int maxCardinality) {
+        return engineWith(maxCardinality, true);
+    }
+
+    private DefaultUsageMeteringEngine engineWith(int maxCardinality, boolean refuseApproximate) {
         InMemoryMeterDefinitionRepository definitions = new InMemoryMeterDefinitionRepository();
         definitions.saveDefinition(MeterDefinition.distinctCount("ACTIVE_USERS", "userId", "Unique active users"));
         return new DefaultUsageMeteringEngine(
@@ -45,7 +50,8 @@ class DistinctCountCardinalityTest {
             definitions,
             Optional.empty(),
             Clock.systemUTC(),
-            maxCardinality
+            maxCardinality,
+            refuseApproximate
         );
     }
 
@@ -101,8 +107,8 @@ class DistinctCountCardinalityTest {
     }
 
     @Test
-    @DisplayName("Approximate flag is propagated to the billable item so rating can refuse to bill")
-    void approximateFlagReachesBillableItem() {
+    @DisplayName("An approximate aggregation is refused for billing, not silently under-billed")
+    void approximateAggregationIsRefusedForBilling() {
         DefaultUsageMeteringEngine engine = engineWith(10);
         ingestDistinctUsers(engine, 25, 1);
 
@@ -110,9 +116,28 @@ class DistinctCountCardinalityTest {
             engine.aggregate(tenantId, Optional.of(customerId), "ACTIVE_USERS", window);
         assertThat(aggregation.isApproximate()).isTrue();
 
+        // The flag is still carried on the item for diagnostics ...
         BillableItemRequest item = aggregation.toBillableItemRequest();
         assertThat(item.attributes()).containsEntry("approximate", true);
         assertThat(item.attributes()).containsEntry("aggregationType", "DISTINCT_COUNT");
+
+        // ... but generating billable items refuses outright: the value is a capped lower bound.
+        assertThatThrownBy(() -> engine.generateBillableItems(tenantId, Optional.of(customerId), window))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("Refusing to bill an approximate aggregation");
+    }
+
+    @Test
+    @DisplayName("A deployment may explicitly accept approximate billing")
+    void approximateBillingCanBeExplicitlyAccepted() {
+        DefaultUsageMeteringEngine engine = engineWith(10, false);
+        ingestDistinctUsers(engine, 25, 1);
+
+        List<BillableItemRequest> items =
+            engine.generateBillableItems(tenantId, Optional.of(customerId), window);
+
+        assertThat(items).hasSize(1);
+        assertThat(items.getFirst().attributes()).containsEntry("approximate", true);
     }
 
     @Test

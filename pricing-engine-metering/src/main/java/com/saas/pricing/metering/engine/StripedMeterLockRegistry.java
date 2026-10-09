@@ -1,12 +1,14 @@
 package com.saas.pricing.metering.engine;
 
 import com.saas.pricing.core.model.TenantId;
+import com.saas.pricing.metering.spi.MeterLockRegistry;
 
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Striped lock registry providing mutual exclusion per {@code (tenant, meter)} pair.
+ * Striped, in-JVM lock registry providing mutual exclusion per {@code (tenant, meter)} pair.
  *
  * <p>The aggregation cache is cache-aside: {@link DefaultUsageMeteringEngine#aggregate} reads the cache,
  * recomputes on a miss and writes the result back, while ingestion concurrently saves an event and
@@ -25,22 +27,23 @@ import java.util.concurrent.locks.ReentrantLock;
  * eviction. The cost is that two unrelated windows of the same tenant+meter may occasionally share a
  * stripe and serialise. This is deliberate: striping is keyed on {@code (tenant, meter)} — not on
  * {@code (tenant, meter, window)} — because ingestion cannot know every window an arbitrary event
- * timestamp belongs to, so both sides must agree on a key that is computable from the event alone.
- * Serialising aggregation per meter is a cheap trade for eliminating a revenue-loss race; the
- * critical sections hold no I/O.</p>
+ * timestamp belongs to, so both sides must agree on a key that is computable from the event alone.</p>
+ *
+ * <p>This registry is JVM-local: it does not coordinate two application instances. Use an
+ * advisory-lock implementation (see the persistence module) when the stores are shared.</p>
  */
-final class MeterLockRegistry {
+public class StripedMeterLockRegistry implements MeterLockRegistry {
 
     /** Fixed, power-of-two stripe count. Bounded memory, no eviction bookkeeping. */
-    static final int DEFAULT_STRIPE_COUNT = 1024;
+    public static final int DEFAULT_STRIPE_COUNT = 1024;
 
     private final ReentrantLock[] stripes;
 
-    MeterLockRegistry() {
+    public StripedMeterLockRegistry() {
         this(DEFAULT_STRIPE_COUNT);
     }
 
-    MeterLockRegistry(int stripeCount) {
+    public StripedMeterLockRegistry(int stripeCount) {
         if (stripeCount <= 0 || Integer.bitCount(stripeCount) != 1) {
             throw new IllegalArgumentException("stripeCount must be a positive power of two");
         }
@@ -54,16 +57,19 @@ final class MeterLockRegistry {
      * Returns the lock guarding the given tenant+meter. Callers must not rely on the stripe being
      * exclusive to this exact key — two keys may legitimately share one.
      */
-    ReentrantLock lockFor(TenantId tenantId, String meterCode) {
+    @Override
+    public ReentrantLock lockFor(TenantId tenantId, String meterCode) {
         Objects.requireNonNull(tenantId, "tenantId cannot be null");
         Objects.requireNonNull(meterCode, "meterCode cannot be null");
-        String key = tenantId.value() + "::" + meterCode.toUpperCase();
+        // Locale.ROOT: bare toUpperCase() is locale-dependent (Turkish 'i'), so the lock key and a
+        // case-insensitive event filter could disagree on some JVMs and lock different stripes.
+        String key = tenantId.value() + "::" + meterCode.toUpperCase(Locale.ROOT);
         int hash = key.hashCode();
         int index = (hash ^ (hash >>> 16)) & (stripes.length - 1);
         return stripes[index];
     }
 
-    int stripeCount() {
+    public int stripeCount() {
         return stripes.length;
     }
 }

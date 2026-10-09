@@ -598,6 +598,11 @@ public class PricingEngineAutoConfiguration {
         if (meterEventRepository instanceof IdempotencyStore store) {
             return new IdempotencyStore() {
                 @Override
+                public Claim claim(TenantId tenantId, String idempotencyKey, String fingerprint, Instant eventTime) {
+                    return store.claim(tenantId, idempotencyKey, fingerprint, eventTime);
+                }
+
+                @Override
                 public boolean checkAndRecord(TenantId tenantId, String idempotencyKey, Instant eventTime) {
                     return store.checkAndRecord(tenantId, idempotencyKey, eventTime);
                 }
@@ -620,6 +625,11 @@ public class PricingEngineAutoConfiguration {
             requireJdbc(jdbcTemplate, "IdempotencyStore");
             JdbcMeterEventRepository repo = new JdbcMeterEventRepository(jdbcTemplate);
             return new IdempotencyStore() {
+                @Override
+                public Claim claim(TenantId tenantId, String idempotencyKey, String fingerprint, Instant eventTime) {
+                    return repo.claim(tenantId, idempotencyKey, fingerprint, eventTime);
+                }
+
                 @Override
                 public boolean checkAndRecord(TenantId tenantId, String idempotencyKey, Instant eventTime) {
                     return repo.checkAndRecord(tenantId, idempotencyKey, eventTime);
@@ -666,17 +676,32 @@ public class PricingEngineAutoConfiguration {
         IdempotencyStore idempotencyStore,
         MeterEventRepository meterEventRepository,
         MeterAggregationRepository meterAggregationRepository,
-        MeterDefinitionRepository meterDefinitionRepository
+        MeterDefinitionRepository meterDefinitionRepository,
+        @Autowired(required = false) JdbcTemplate jdbcTemplate
     ) {
-        Optional<Duration> lateness = Optional.ofNullable(properties.getMetering().getAllowedLatenessSeconds())
-            .map(Duration::ofSeconds);
+        Long latenessSeconds = properties.getMetering().getAllowedLatenessSeconds();
+        Optional<Duration> lateness = (latenessSeconds == null || latenessSeconds < 0)
+            ? Optional.empty()
+            : Optional.of(Duration.ofSeconds(latenessSeconds));
+
+        // Same stores, same lock: a per-JVM stripe lock cannot stop two nodes re-saving the same
+        // window onto shared tables, so the JDBC deployment uses advisory locks instead.
+        com.saas.pricing.metering.spi.MeterLockRegistry lockRegistry =
+            (properties.getPersistenceType() == PricingEngineProperties.PersistenceType.JDBC
+                && jdbcTemplate != null)
+                ? new com.saas.pricing.persistence.jdbc.JdbcAdvisoryMeterLockRegistry(jdbcTemplate.getDataSource())
+                : new com.saas.pricing.metering.engine.StripedMeterLockRegistry();
 
         return new DefaultUsageMeteringEngine(
             idempotencyStore,
             meterEventRepository,
             meterAggregationRepository,
             meterDefinitionRepository,
-            lateness
+            lateness,
+            Clock.systemUTC(),
+            DefaultUsageMeteringEngine.DEFAULT_MAX_DISTINCT_CARDINALITY,
+            properties.getMetering().isRefuseApproximateAggregations(),
+            lockRegistry
         );
     }
 
@@ -697,10 +722,21 @@ public class PricingEngineAutoConfiguration {
     public AsyncRatingTriggerService asyncRatingTriggerService(
         UsageMeteringEngine usageMeteringEngine,
         PricingEngine pricingEngine,
+        PricingEngineProperties properties,
         @Autowired(required = false) WalletRepository walletRepository,
-        @Autowired(required = false) WalletDrawdownEngine walletDrawdownEngine
+        @Autowired(required = false) WalletDrawdownEngine walletDrawdownEngine,
+        @Autowired(required = false) JdbcTemplate jdbcTemplate
     ) {
-        return new AsyncRatingTriggerService(usageMeteringEngine, pricingEngine, walletRepository, walletDrawdownEngine);
+        // Same persistence selection as the metering engine: shared stores need the JDBC claim
+        // store, whose compare-and-set is what stops two nodes charging the same window delta.
+        com.saas.pricing.metering.spi.RatingClaimStore claimStore =
+            (properties.getPersistenceType() == PricingEngineProperties.PersistenceType.JDBC
+                && jdbcTemplate != null)
+                ? new com.saas.pricing.persistence.jdbc.JdbcRatingClaimStore(jdbcTemplate)
+                : new com.saas.pricing.metering.spi.impl.InMemoryRatingClaimStore();
+
+        return new AsyncRatingTriggerService(usageMeteringEngine, pricingEngine, walletRepository,
+            walletDrawdownEngine, java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor(), claimStore);
     }
 
     @Bean
