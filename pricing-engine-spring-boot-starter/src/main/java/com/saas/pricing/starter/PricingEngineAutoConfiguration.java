@@ -141,6 +141,66 @@ public class PricingEngineAutoConfiguration {
         return new com.saas.pricing.starter.web.PricingEngineExceptionHandler();
     }
 
+    /**
+     * Registers admission control, so the engine sheds load before it is overwhelmed.
+     *
+     * <p>Disabled by default: with no configuration the bean is
+     * {@link com.saas.pricing.core.spi.AdmissionController#UNBOUNDED} and the hot path pays no
+     * allocation and no CAS. A deployment that has sized its database connection pool and wants the
+     * engine to refuse cleanly above that point enables it.</p>
+     *
+     * <p>Two limits, and the distinction is deliberate. A token bucket bounds what one tenant may
+     * consume (shed = HTTP 429, that tenant's fault). An in-flight ceiling bounds what this node can
+     * execute (shed = HTTP 503, everyone's problem). Conflating them makes one noisy tenant look
+     * like a platform outage.</p>
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public com.saas.pricing.core.spi.AdmissionController admissionController(
+        PricingEngineProperties properties
+    ) {
+        PricingEngineProperties.AdmissionProperties admission = properties.getAdmission();
+        if (!admission.isEnabled()) {
+            return com.saas.pricing.core.spi.AdmissionController.UNBOUNDED;
+        }
+        log.info("Pricing Engine: admission control enabled - {} permits per {} per tenant, burst {}, "
+                + "max in-flight {}", admission.getPermits(), admission.getPeriod(),
+                admission.getBurst(), admission.getMaxConcurrency());
+        return new com.saas.pricing.core.spi.impl.TokenBucketAdmissionController(
+                admission.getPermits(),
+                admission.getPeriod(),
+                admission.getBurst(),
+                admission.getMaxConcurrency());
+    }
+
+    /**
+     * Applies admission control to the pricing endpoints, when it is enabled.
+     *
+     * <p>Only registered when admission control is switched on. With the default unbounded
+     * controller the interceptor would take and release a slot per request for no effect.</p>
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnWebApplication
+    @ConditionalOnProperty(prefix = "pricing.engine", name = "web-enabled", havingValue = "true",
+            matchIfMissing = true)
+    public com.saas.pricing.starter.web.AdmissionControlInterceptor admissionControlInterceptor(
+        com.saas.pricing.core.spi.AdmissionController admissionController,
+        org.springframework.beans.factory.ObjectProvider<com.saas.pricing.starter.tenant.TenantResolver> resolvers
+    ) {
+        if (admissionController == com.saas.pricing.core.spi.AdmissionController.UNBOUNDED) {
+            return null;
+        }
+        com.saas.pricing.starter.tenant.TenantResolver resolver = resolvers.getIfAvailable();
+        if (resolver == null) {
+            throw new IllegalStateException(
+                    "pricing.engine.admission.enabled is true but no TenantResolver bean is defined. "
+                        + "Admission control keys its per-tenant bucket on the authenticated tenant, "
+                        + "which must come from your resolver rather than from request input.");
+        }
+        return new com.saas.pricing.starter.web.AdmissionControlInterceptor(admissionController, resolver);
+    }
+
     // =========================================================================
     // 1. SPI Repositories & Storage Adapters (In-Memory or JDBC / PostgreSQL)
     // =========================================================================

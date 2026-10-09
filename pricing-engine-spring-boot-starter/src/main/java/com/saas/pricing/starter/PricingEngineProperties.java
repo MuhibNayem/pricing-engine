@@ -211,6 +211,75 @@ public class PricingEngineProperties {
         }
     }
 
+    /**
+     * Admission control: sheds load before the engine is overwhelmed.
+     *
+     * <p>Disabled by default, so an unconfigured deployment pays nothing on the hot path. This
+     * governs the engine's own capacity — per-tenant rate and in-flight concurrency. It is not edge
+     * protection: per-IP or per-API-key limiting belongs to the gateway in front of the engine.</p>
+     */
+    public static class AdmissionProperties {
+        private boolean enabled = false;
+        private long permits = 1_000;
+        private java.time.Duration period = java.time.Duration.ofSeconds(1);
+        private long burst = 1_000;
+        private int maxConcurrency = 256;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        /** Sustained permits granted per {@link #getPeriod()} per tenant. */
+        public long getPermits() {
+            return permits;
+        }
+
+        public void setPermits(long permits) {
+            this.permits = permits;
+        }
+
+        /** Window over which {@link #getPermits()} are granted. */
+        public java.time.Duration getPeriod() {
+            return period;
+        }
+
+        public void setPeriod(java.time.Duration period) {
+            this.period = period;
+        }
+
+        /** Maximum tokens a tenant can bank, i.e. the largest burst it may send. */
+        public long getBurst() {
+            return burst;
+        }
+
+        public void setBurst(long burst) {
+            this.burst = burst;
+        }
+
+        /** Ceiling on simultaneous in-flight engine work across all tenants on this node. */
+        public int getMaxConcurrency() {
+            return maxConcurrency;
+        }
+
+        public void setMaxConcurrency(int maxConcurrency) {
+            this.maxConcurrency = maxConcurrency;
+        }
+    }
+
+    private AdmissionProperties admission = new AdmissionProperties();
+
+    public AdmissionProperties getAdmission() {
+        return admission;
+    }
+
+    public void setAdmission(AdmissionProperties admission) {
+        this.admission = admission;
+    }
+
     public boolean isEnabled() {
         return enabled;
     }

@@ -4,8 +4,10 @@ import com.saas.pricing.starter.tenant.TenantAccessDeniedException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -25,7 +27,35 @@ public class PricingEngineExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(PricingEngineExceptionHandler.class);
     private static final String PROBLEM_BASE = "https://docs.aequitas.example/problems/";
 
-    /** Tenant mismatch or missing tenant. Never echo the requested tenant back to the caller. */
+    /**
+ * Work shed by admission control, mapped to the status that tells the caller what to do.
+ *
+ * <p>429 means <em>your</em> quota and the engine is healthy — wait the {@code Retry-After} and
+ * slow down. 503 means the engine itself is saturated and no tenant's quota is at fault. They are
+ * not interchangeable: answering 503 to a tenant that is merely over its own rate makes healthy
+ * clients believe the platform is down, and hides the real signal from monitoring.</p>
+ *
+ * <p>{@code Retry-After} is set on both. Omitting it leaves every client to invent its own backoff,
+ * which produces synchronised retries that immediately re-saturate the thing that just shed them.</p>
+ */
+@ExceptionHandler(com.saas.pricing.core.spi.LoadShedException.class)
+public ResponseEntity<ProblemDetail> handleLoadShed(com.saas.pricing.core.spi.LoadShedException ex) {
+    boolean rateLimited = ex.rateLimited();
+    HttpStatus status = rateLimited ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.SERVICE_UNAVAILABLE;
+
+    ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, ex.getMessage());
+    problem.setTitle(rateLimited ? "Rate limit exceeded" : "Service temporarily overloaded");
+    problem.setType(URI.create(PROBLEM_BASE + (rateLimited ? "rate-limited" : "overloaded")));
+    problem.setProperty("code", rateLimited ? "RATE_LIMITED" : "ENGINE_OVERLOADED");
+    problem.setProperty("retryAfterSeconds", Math.max(0L, ex.retryAfter().toSeconds()));
+
+    long retryAfterSeconds = Math.max(1L, ex.retryAfter().toSeconds());
+    return ResponseEntity.status(status)
+            .header(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds))
+            .body(problem);
+}
+
+/** Tenant mismatch or missing tenant. Never echo the requested tenant back to the caller. */
     @ExceptionHandler(TenantAccessDeniedException.class)
     public ProblemDetail handleTenantAccessDenied(TenantAccessDeniedException ex) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
