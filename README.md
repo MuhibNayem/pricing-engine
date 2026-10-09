@@ -293,23 +293,35 @@ To compile and execute the complete test suite under **Java 25**:
 
 ```bash
 # Requires JDK 25+ (maven-enforcer-plugin enforces this).
-JAVA_HOME=$(/usr/libexec/java_home -v 25) mvn clean test
+export JAVA_HOME=/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home
+mvn -B -ntp -o clean test
 ```
+
+> **Careful with `java_home`.** On a machine with several JDKs installed, `/usr/libexec/java_home -v 25`
+> can resolve to a *different* major version without error. Verify what you got before trusting it:
+>
+> ```bash
+> $JAVA_HOME/bin/java -version   # must report 25
+> ```
+
+The default build excludes the `load` and `soak` profiles; run them deliberately with
+`-Dsurefire.excludedGroups=`. See [docs/RESILIENCE_TESTING.md](docs/RESILIENCE_TESTING.md).
 
 ### Test Results Summary:
 * `pricing-engine-parent`: SUCCESS
-* `pricing-engine-core`: 324 tests passed, 0 failures, 0 errors
+* `pricing-engine-core`: 366 tests passed, 0 failures, 0 errors
 * `pricing-engine-evaluator`: 50 tests passed, 0 failures, 0 errors
 * `pricing-engine-metering`: 71 tests passed, 0 failures, 0 errors
-* `pricing-engine-persistence`: 113 tests passed, 0 failures, 0 errors
-* `pricing-engine-spring-boot-starter`: 155 tests passed, 0 failures, 0 errors
-* **Total: 713 tests run, 0 failures, 0 errors, 0 skipped.**
+* `pricing-engine-persistence`: 119 tests passed, 0 failures, 0 errors
+* `pricing-engine-spring-boot-starter`: 169 tests passed, 0 failures, 0 errors
+* **Total: 775 tests run, 0 failures, 0 errors, 0 skipped.**
 
 ---
 
 ## 📚 Deep Dive Documentation
 
 For detailed architectural diagrams, operational runbooks, and sales whitepapers:
+* 🧭 [**System Architect Brief**](docs/SYSTEM_ARCHITECT_BRIEF.md) — *start here if you are deciding whether to adopt this*
 * 📘 [Developer Runbook](docs/DEVELOPER_RUNBOOK.md)
 * 📐 [System Architecture Specification](docs/SYSTEM_ARCHITECTURE_SPECIFICATION.md)
 * 💼 [Executive Business Sales Whitepaper](docs/BUSINESS_SALES_WHITEPAPER.md)
