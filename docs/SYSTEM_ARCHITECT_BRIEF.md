@@ -33,13 +33,14 @@ This is the first question because it eliminates most of the others.
 | Question | Answer |
 |---|---|
 | New datastore? | **No.** PostgreSQL only, and only if you use the persistence module. |
-| New cache tier? | **No.** Zero references to Redis, Caffeine, Lettuce, Jedis, Hazelcast or EhCache in any POM. |
+| New cache tier? | **Not required.** There *is* an optional `pricing-engine-redis` module for hosts that already run Redis — but nothing depends on it, and a deployment that omits it never has Lettuce on its classpath. Zero references to Caffeine, Jedis, Hazelcast or EhCache. |
 | New broker? | **No.** Message transport is your SPI. |
 | New runtime process? | **No.** |
 | Forced Spring dependency? | **No.** `pricing-engine-core` has **zero runtime dependencies**; `pricing-engine-metering` adds only an *optional* Jackson. Spring arrives only in `pricing-engine-spring-boot-starter`, which you may omit. |
 
 A library that forces a datastore into your architecture is a decision you have to live with for the
-life of the dependency. This one has nothing to live with.
+life of the dependency. This one has nothing to live with — and where an optional integration is
+worth providing, it lives in its own module so the *choice* is yours too.
 
 ---
 
@@ -183,9 +184,14 @@ mvn -pl pricing-engine-persistence test -Dtest=PostgresTransactionChaosTest
 mvn -pl pricing-engine-core test -Dtest=PricingEngineLoadTest -Dsurefire.excludedGroups=
 mvn -pl pricing-engine-metering test -Dtest=SoakTest -Dsurefire.excludedGroups=
 
-# The claim in §1 — no forced datastore anywhere in the dependency graph.
-grep -ri 'redis\|caffeine\|lettuce\|jedis' --include=pom.xml .
-```
+# The claim in §1 — no datastore is *forced*. Redis exists only in its own module.
+grep -rl 'lettuce' --include=pom.xml .
+# -> pricing-engine-redis/pom.xml   (and only that)
+
+# And nothing depends on it. (The root POM lists it under <module>, which is aggregation,
+# not a dependency — hence matching on the artifactId tag.)
+grep -rn '<artifactId>pricing-engine-redis</artifactId>' --include=pom.xml . | grep -v '^./pricing-engine-redis/'
+# -> (no output)
 
 That last one returns nothing, and it should.
 
