@@ -204,9 +204,11 @@ public final class PricingDtos {
             if (candidates == null) return null;
             for (String s : candidates) {
                 if (s != null) {
+                    // Money.parse is the single authority on the rendered format; the DTO must not
+                    // re-derive it by splitting on the last space, which is how the two drifted.
                     int idx = s.lastIndexOf(' ');
                     if (idx >= 0 && idx < s.length() - 1) {
-                        return s.substring(idx + 1);
+                        return com.saas.pricing.core.model.Money.parse(s).currency().code();
                     }
                 }
             }
@@ -215,14 +217,11 @@ public final class PricingDtos {
 
         private static BigDecimal parseMoneyAmount(String s) {
             if (s == null) return null;
-            int idx = s.lastIndexOf(' ');
-            String num = idx >= 0 ? s.substring(0, idx) : s;
             try {
-                return new BigDecimal(num.trim());
-            } catch (NumberFormatException e) {
+                return com.saas.pricing.core.model.Money.parse(s).amount();
+            } catch (IllegalArgumentException e) {   // NumberFormatException extends it
                 throw new IllegalArgumentException(
-                    "Cannot parse monetary amount from '%s': numeric portion '%s' is not a valid number"
-                        .formatted(s, num.trim()), e);
+                    "Cannot parse monetary amount from '%s': %s".formatted(s, e.getMessage()), e);
             }
         }
     }

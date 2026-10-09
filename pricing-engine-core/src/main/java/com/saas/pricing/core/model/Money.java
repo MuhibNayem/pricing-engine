@@ -25,8 +25,93 @@ public record Money(BigDecimal amount, CurrencyUnit currency) implements Compara
         return new Money(amount, currency);
     }
 
+    /**
+     * Parses a monetary amount.
+     *
+     * <p>Accepts either form:
+     * <ul>
+     *   <li>a bare numeric — {@code "100.00"}, the amount in the supplied currency; or</li>
+     *   <li>the rendered form this class emits — {@code "100.00 USD"} — where the trailing code
+     *       must equal the supplied currency.</li>
+     * </ul>
+     *
+     * <p>Accepting the rendered form makes {@code of(m.toString(), m.currency())} round-trip, which
+     * it previously did not: {@link #toString()} emits the currency code but this method used to
+     * reject it, so anything that serialised a {@code Money} through {@code toString()} had no
+     * supported way to read it back.
+     *
+     * @throws IllegalArgumentException if the text is not a valid amount, or carries a currency
+     *                                  code that disagrees with {@code currency}
+     */
     public static Money of(String amountStr, CurrencyUnit currency) {
-        return new Money(new BigDecimal(amountStr), currency);
+        Objects.requireNonNull(amountStr, "Amount string cannot be null");
+        Objects.requireNonNull(currency, "Currency cannot be null");
+
+        String trimmed = amountStr.strip();
+        int split = trimmed.lastIndexOf(' ');
+        if (split < 0) {
+            return new Money(new BigDecimal(trimmed), currency);
+        }
+
+        String numeric = trimmed.substring(0, split).strip();
+        String code = trimmed.substring(split + 1).strip();
+        if (!code.equals(currency.code())) {
+            throw new IllegalArgumentException(
+                "Amount '" + amountStr + "' is denominated in " + code + ", not " + currency.code());
+        }
+        return new Money(new BigDecimal(numeric), currency);
+    }
+
+    /**
+     * Parses the rendered form {@code "<amount> <CODE>"} and takes the currency from the text.
+     *
+     * <p>The inverse of {@link #toString()}: {@code parse(m.toString())} reproduces {@code m}.
+     *
+     * @throws IllegalArgumentException if the text is not a recognised amount
+     */
+    public static Money parse(String rendered) {
+        Objects.requireNonNull(rendered, "Rendered amount cannot be null");
+
+        String trimmed = rendered.strip();
+        int split = trimmed.lastIndexOf(' ');
+        if (split < 0) {
+            throw new IllegalArgumentException(
+                "Rendered amount '" + rendered + "' carries no currency code");
+        }
+        String numeric = trimmed.substring(0, split).strip();
+        String code = trimmed.substring(split + 1).strip();
+        return new Money(new BigDecimal(numeric), CurrencyUnit.of(code));
+    }
+
+    /**
+     * Rounds to the currency's own scale, the boundary where an amount becomes documentable.
+     *
+     * <p>The constructor deliberately accepts more precision than the currency can represent,
+     * because intermediate arithmetic needs somewhere to hold the extra digits — {@link
+     * #CALCULATION_SCALE} is 8. This is the method that closes that gap on the way out, using the
+     * same {@link #DEFAULT_ROUNDING_MODE} as the rest of the engine so a document never disagrees
+     * with its own arithmetic.
+     *
+     * <p>Call this when producing a value for a customer, an invoice, or an API response. Do not
+     * call it mid-calculation.
+     */
+    public Money roundedToCurrencyScale() {
+        int scale = currency.defaultFractionDigits();
+        if (scale < 0) {
+            return this;
+        }
+        BigDecimal rounded = amount.setScale(scale, DEFAULT_ROUNDING_MODE);
+        return rounded.equals(amount) ? this : new Money(rounded, currency);
+    }
+
+    /**
+     * Whether this amount carries precision its currency cannot represent.
+     *
+     * <p>Legal to hold — see {@link #roundedToCurrencyScale()} — but it must not reach a document.
+     */
+    public boolean exceedsCurrencyScale() {
+        return amount.scale() > currency.defaultFractionDigits()
+            && amount.stripTrailingZeros().scale() > currency.defaultFractionDigits();
     }
 
     public static Money of(long amount, CurrencyUnit currency) {

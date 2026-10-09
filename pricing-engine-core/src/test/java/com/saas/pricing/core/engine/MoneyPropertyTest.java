@@ -4,6 +4,7 @@ import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.model.Money;
 
 import net.jqwik.api.Arbitraries;
+import net.jqwik.api.Assume;
 import net.jqwik.api.Tuple;
 import net.jqwik.api.Arbitrary;
 import net.jqwik.api.ForAll;
@@ -363,27 +364,48 @@ class MoneyPropertyTest {
     }
 
     /**
-     * Pins a known asymmetry rather than asserting a round-trip that does not exist.
+     * {@code toString()} and {@code parse} are inverses.
      *
-     * <p>{@code toString()} renders {@code "100.00 USD"}; {@code of(String, CurrencyUnit)} parses a
-     * bare numeric and takes the currency as a separate argument. The two are NOT inverses, and
-     * jqwik found this by trying the round-trip. The codebase bridges the gap by hand - see the
-     * {@code lastIndexOf(' ')} parsing in {@code PricingDtos}.
-     *
-     * <p>This test exists so that if somebody later adds currency-suffix parsing to
-     * {@code of(String)}, the change breaks a test and gets a decision, rather than quietly
-     * changing what a bare-numeric parse means for existing callers.
+     * <p>They were not. {@code toString()} renders {@code "100.00 USD"} while
+     * {@code of(String)} parsed a bare numeric and had no way to read a rendered value back, so
+     * anything that serialised a {@code Money} through {@code toString()} had no supported way to
+     * recover it — {@code PricingDtos} bridged the gap with a hand-rolled {@code lastIndexOf(' ')}.
+     * jqwik found the asymmetry by attempting the round-trip; {@code Money.parse} closes it.
      */
+    @Property(tries = 500)
+    void theRenderedFormRoundTrips(@ForAll("realisticMoney") Money money) {
+        assertThat(Money.parse(money.toString()))
+            .as("parse(toString()) must reproduce the original")
+            .isEqualTo(money);
+        assertThat(Money.of(money.toString(), money.currency()))
+            .as("of() accepts the rendered form when the currency agrees")
+            .isEqualTo(money);
+        assertThat(Money.of(money.amount().toPlainString(), money.currency()))
+            .as("a bare numeric is still accepted")
+            .isEqualTo(money);
+    }
+
     @Property(tries = 300)
-    void ofStringParsesBareNumericsOnly(@ForAll("realisticMoney") Money money) {
-        String bare = money.amount().toPlainString();
-
-        assertThat(Money.of(bare, money.currency()).amount())
-            .isEqualByComparingTo(money.amount());
-
-        assertThat(catchThrowable(() -> Money.of(money.toString(), money.currency())))
-            .as("today the rendered form is not accepted by of(String); a future change must be deliberate")
+    void aCurrencyCodeThatDisagreesIsRefused(@ForAll("realisticMoney") Money money,
+                                             @ForAll("currency") CurrencyUnit other) {
+        Assume.that(!other.code().equals(money.currency().code()));
+        assertThat(catchThrowable(() -> Money.of(money.toString(), other)))
+            .as("'100.00 USD' must not silently become 100.00 EUR")
             .isNotNull();
+    }
+
+    @Property(tries = 400)
+    void roundingToCurrencyScaleClosesThePrecisionGap(@ForAll("realisticMoney") Money money) {
+        Money rounded = money.roundedToCurrencyScale();
+
+        assertThat(rounded.exceedsCurrencyScale())
+            .as("nothing that is documentable may still exceed its currency's scale")
+            .isFalse();
+        assertThat(rounded.amount().stripTrailingZeros().scale())
+            .isLessThanOrEqualTo(Math.max(money.currency().defaultFractionDigits(), 0));
+        assertThat(rounded.currency()).isEqualTo(money.currency());
+        assertThat(rounded.plus(money.roundedToCurrencyScale().negate()).amount())
+            .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     private static Throwable catchThrowable(Runnable r) {
