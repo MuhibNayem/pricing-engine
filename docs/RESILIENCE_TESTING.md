@@ -12,6 +12,7 @@ gap between them is where incidents live. Read this before quoting the test coun
 | **DB chaos** | `PostgresTransactionChaosTest` | **yes, when Docker is present** | Behaviour when a real transaction dies |
 | **Load (engine)** | `PricingEngineLoadTest` | **no** — tagged `load` | Throughput and latency distribution under concurrency |
 | **Load (HTTP)** | `HttpLoadTest` + `LoadTestHostApplication` | **no** — tagged `load` | The same, over the real request path a host drives |
+| **Soak** | `SoakTest` | **no** — tagged `soak` | Whether the TTL and entry caps are actually honoured |
 
 Load tests are excluded from the ordinary build by default and run deliberately:
 
@@ -113,6 +114,34 @@ These skip themselves when Docker is unavailable (`disabledWithoutDocker = true`
 reporting a pass they did not earn. Check the build log: a CI box without Docker runs strictly
 fewer assertions than your laptop, and that difference should be visible, not silent.
 
+### Soak (`SoakTest`, 7 tests, metering)
+
+Both in-memory stores promise that the previous unbounded maps "grew for the lifetime of the
+process" and are now TTL-bounded and entry-capped. This drives far more operations than the cap
+allows and checks the promise is kept. Time is injected through the `Clock` seam both stores
+already expose, so **2.7 simulated years pass in about six seconds**:
+
+```
+operations=50,000   threads=8   simulated-elapsed=2028-10-29 (from 2026-01-01)
+cap=5,000 per store
+```
+
+- 4× the cap of idempotency keys: the oldest 5,000 are evicted, the newest 5,000 survive.
+- 4× the cap of rating claims: same, measured through `find()` rather than a `size()` the SPI
+  does not expose — behaviour, not internals.
+- Past a 7-day TTL a key is forgotten, so re-ingesting it is `CLAIMED`, not `DUPLICATE`.
+- Past a 90-day TTL a rating claim is unreadable. This one matters most: a surviving stale claim
+  would make a retry compute its delta against a stale total and charge the wrong amount.
+- A hot key hammered by 8 threads × 500 attempts is classified exactly once per attempt —
+  `CLAIMED`/`DUPLICATE`/`CONFLICT` — with no attempt falling into two buckets or none.
+
+**The finding worth acting on: reclamation is lazy, and the sweep lands on one request.** There is
+no scheduler, so nothing runs while a store sits idle. The *next* read sweeps every expired entry
+in a single pass. At the default cap of 100,000 entries that is a pause on one unlucky request, not
+a rounding error. A background sweeper would fix it and is deliberately not added here — it would
+mean this store starting threads it does not own. If your deployment has bursty traffic followed by
+long idle periods, size `DEFAULT_MAX_ENTRIES` for that first request rather than for steady state.
+
 ## What this does NOT prove
 
 Stated plainly, because this is the part that gets skipped in a status update.
@@ -121,9 +150,10 @@ Stated plainly, because this is the part that gets skipped in a status update.
    corrupts a TCP stream, or makes a DNS lookup fail. Those are the failures that actually reach
    production, and a repository that throws `RuntimeException` is a polite subset of them.
 
-2. **No soak.** Every test here completes in seconds. Memory growth, connection-pool exhaustion,
-   cache unboundedness and file-descriptor leaks only appear over hours or days. The idempotency
-   stores are explicitly TTL-bounded; that bounding has never been observed over a real TTL.
+2. **Clock injection stops at the store.** The soak advances a `Clock` the stores were handed. It
+   says nothing about NTP drift, a leap second, or a clock that jumps backwards on the host, and
+   nothing about connection-pool exhaustion or file-descriptor leaks, which need hours of real
+   elapsed time rather than simulated time.
 
 3. **No clock or randomness injection at the system level.** Tests choose their instants. A real
    cluster has NTP drift, a leap second, and a clock that jumps backwards — untested.
@@ -135,8 +165,8 @@ Stated plainly, because this is the part that gets skipped in a status update.
 
 ## Recommended order of work
 
-1. A soak profile: run the idempotency and rating-claim stores past their TTL and assert they
-   actually shrink. The stores are explicitly TTL-bounded and that bounding has never been
+1. Network fault injection — a proxy that can sever and delay connections — which would extend the
+   database chaos up through the transport layer. Toxiproxy is the usual choice. The stores are explicitly TTL-bounded and that bounding has never been
    observed happening.
 2. Network fault injection — a proxy that can sever and delay connections — which would extend the
    database chaos above up through the transport layer. Toxiproxy is the usual choice.
