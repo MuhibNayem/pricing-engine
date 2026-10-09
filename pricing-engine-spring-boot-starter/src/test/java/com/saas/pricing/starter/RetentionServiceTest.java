@@ -37,16 +37,20 @@ class RetentionServiceTest {
     static class RecordingActions implements RetentionService.RetentionActions {
         final List<String> erased = new ArrayList<>();
         final List<String> anonymised = new ArrayList<>();
+        final List<CustomerId> erasedCustomers = new ArrayList<>();
+        final List<CustomerId> anonymisedCustomers = new ArrayList<>();
 
         @Override
-        public int erase(RetentionClass.RecordClass recordClass, TenantId tenantId, Instant createdBefore) {
+        public int erase(RetentionClass.RecordClass recordClass, TenantId tenantId, CustomerId customerId, Instant createdBefore) {
             erased.add(recordClass.name());
+            erasedCustomers.add(customerId);
             return 3;
         }
 
         @Override
-        public int anonymise(RetentionClass.RecordClass recordClass, TenantId tenantId, Instant createdBefore) {
+        public int anonymise(RetentionClass.RecordClass recordClass, TenantId tenantId, CustomerId customerId, Instant createdBefore) {
             anonymised.add(recordClass.name());
+            anonymisedCustomers.add(customerId);
             return 5;
         }
     }
@@ -170,5 +174,44 @@ class RetentionServiceTest {
         assertThat(outbox.findByTenant(TENANT, 10))
             .as("both executions must be announced")
             .hasSize(2);
+    }
+
+    @Test
+    @DisplayName("retention execution preserves and passes customer id to customer-scoped retention actions")
+    void customerScopedRetentionActionsReceiveCustomerId() {
+        var actions = new RecordingActions();
+        var outbox = new InMemoryOutboxRepository();
+        var service = service(actions, outbox);
+
+        var plan = ErasureDecision.evaluate(ErasureDecision.defaultPolicy(), Map.of(
+            RetentionClass.RecordClass.DIAGNOSTIC, Instant.parse("2020-01-01T00:00:00Z"),
+            RetentionClass.RecordClass.FINANCIAL_LEDGER, Instant.parse("2018-01-01T00:00:00Z")), NOW);
+
+        CustomerId specificCustomer = CustomerId.of("cust_gdpr_42");
+        service.execute(plan, TENANT, specificCustomer);
+
+        assertThat(actions.erasedCustomers)
+            .containsExactly(specificCustomer);
+        assertThat(actions.anonymisedCustomers)
+            .containsExactly(specificCustomer);
+    }
+
+    @Test
+    @DisplayName("tenant-wide retention execution without customer id passes null customer id")
+    void tenantWideRetentionExecutionPassesNullCustomerId() {
+        var actions = new RecordingActions();
+        var outbox = new InMemoryOutboxRepository();
+        var service = service(actions, outbox);
+
+        var plan = ErasureDecision.evaluate(ErasureDecision.defaultPolicy(), Map.of(
+            RetentionClass.RecordClass.DIAGNOSTIC, Instant.parse("2020-01-01T00:00:00Z"),
+            RetentionClass.RecordClass.FINANCIAL_LEDGER, Instant.parse("2018-01-01T00:00:00Z")), NOW);
+
+        service.execute(plan, TENANT);
+
+        assertThat(actions.erasedCustomers)
+            .containsExactly((CustomerId) null);
+        assertThat(actions.anonymisedCustomers)
+            .containsExactly((CustomerId) null);
     }
 }

@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
+import com.saas.pricing.metering.engine.UsageMeteringEngine;
+import com.saas.pricing.metering.stream.AsyncRatingTriggerService;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PricingEngineAutoConfigurationTest {
@@ -84,5 +87,111 @@ class PricingEngineAutoConfigurationTest {
         assertThat(result).isEqualTo("SUCCESS");
         // Outside scope, values are unbound
         assertThat(com.saas.pricing.starter.context.ScopedPricingContext.currentTenant()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Should omit cacheProvider and not wrap currencyExchangeProvider when enable-caching is false")
+    void testEnableCachingFalse() {
+        contextRunner
+            .withPropertyValues("pricing.engine.enable-caching=false")
+            .run(context -> {
+                assertThat(context).doesNotHaveBean(com.saas.pricing.core.spi.CacheProvider.class);
+                var provider = context.getBean(com.saas.pricing.core.spi.CurrencyExchangeProvider.class);
+                assertThat(provider).isNotInstanceOf(com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should omit asyncRatingTriggerService when async-rating-enabled is false")
+    void testAsyncRatingEnabledFalse() {
+        contextRunner
+            .withPropertyValues("pricing.engine.streaming.async-rating-enabled=false")
+            .run(context -> {
+                assertThat(context).doesNotHaveBean(AsyncRatingTriggerService.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should back off web controllers when web-enabled is false")
+    void testWebEnabledFalse() {
+        new org.springframework.boot.test.context.runner.WebApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(PricingEngineAutoConfiguration.class))
+            .withPropertyValues("pricing.engine.web-enabled=false")
+            .run(context -> {
+                assertThat(context).doesNotHaveBean(com.saas.pricing.starter.web.PricingEngineController.class);
+                assertThat(context).doesNotHaveBean(com.saas.pricing.starter.web.PricingEngineExceptionHandler.class);
+                assertThat(context).doesNotHaveBean(com.saas.pricing.starter.web.InvoiceController.class);
+                assertThat(context).doesNotHaveBean(com.saas.pricing.starter.web.SubscriptionController.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should back off metering engine and controller when metering.enabled is false")
+    void testMeteringEnabledFalse() {
+        new org.springframework.boot.test.context.runner.WebApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(PricingEngineAutoConfiguration.class))
+            .withBean(com.saas.pricing.starter.tenant.TenantResolver.class, () -> (com.saas.pricing.starter.tenant.TenantResolver) () -> "tenant_test")
+            .withPropertyValues("pricing.engine.metering.enabled=false")
+            .run(context -> {
+                assertThat(context).doesNotHaveBean(UsageMeteringEngine.class);
+                assertThat(context).doesNotHaveBean(com.saas.pricing.starter.web.MeteringController.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should correctly bind defaultCurrency, roundingMode, and allowRequestDiscounts")
+    void testPropertiesBinding() {
+        contextRunner
+            .withPropertyValues(
+                "pricing.engine.default-currency=EUR",
+                "pricing.engine.rounding-mode=CEILING",
+                "pricing.engine.allow-request-discounts=true"
+            )
+            .run(context -> {
+                var props = context.getBean(PricingEngineProperties.class);
+                assertThat(props.getDefaultCurrency()).isEqualTo("EUR");
+                assertThat(props.getRoundingMode()).isEqualTo(java.math.RoundingMode.CEILING);
+                assertThat(props.isAllowRequestDiscounts()).isTrue();
+            });
+    }
+
+    @Test
+    @DisplayName("Should back off streaming dispatcher and consumer when streaming.enabled is false")
+    void testStreamingEnabledFalse() {
+        contextRunner
+            .withPropertyValues("pricing.engine.streaming.enabled=false")
+            .run(context -> {
+                assertThat(context).doesNotHaveBean(AsyncRatingTriggerService.class);
+                assertThat(context).doesNotHaveBean(com.saas.pricing.metering.stream.DefaultMeterEventDispatcher.class);
+                assertThat(context).doesNotHaveBean(com.saas.pricing.metering.stream.MeterEventConsumer.class);
+                assertThat(context).doesNotHaveBean(com.saas.pricing.starter.streaming.SpringMeterEventListener.class);
+            });
+    }
+
+    @Test
+    @DisplayName("Should correctly bind and configure invoice numbering and metering knobs")
+    void testInvoiceNumberingAndMeteringKnobsBinding() {
+        contextRunner
+            .withPropertyValues(
+                "pricing.engine.invoice-numbering.scheme=CUSTOMER_SEQUENTIAL",
+                "pricing.engine.invoice-numbering.prefix=BILL",
+                "pricing.engine.invoice-numbering.padding=6",
+                "pricing.engine.invoice-numbering.start-at=1000",
+                "pricing.engine.metering.allowed-lateness-seconds=3600",
+                "pricing.engine.metering.refuse-approximate-aggregations=false"
+            )
+            .run(context -> {
+                var props = context.getBean(PricingEngineProperties.class);
+                assertThat(props.getInvoiceNumbering().getScheme())
+                    .isEqualTo(com.saas.pricing.core.model.invoice.InvoiceNumberScheme.CUSTOMER_SEQUENTIAL);
+                assertThat(props.getInvoiceNumbering().getPrefix()).isEqualTo("BILL");
+                assertThat(props.getInvoiceNumbering().getPadding()).isEqualTo(6);
+                assertThat(props.getInvoiceNumbering().getStartAt()).isEqualTo(1000L);
+
+                assertThat(props.getMetering().getAllowedLatenessSeconds()).isEqualTo(3600L);
+                assertThat(props.getMetering().isRefuseApproximateAggregations()).isFalse();
+
+                assertThat(context).hasSingleBean(com.saas.pricing.core.model.invoice.InvoiceNumberService.class);
+            });
     }
 }

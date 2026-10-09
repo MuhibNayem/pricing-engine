@@ -39,18 +39,42 @@ public class RetentionService {
     /** The operations retention may actually perform, per record class. */
     public interface RetentionActions {
         /**
-         * Deletes records of {@code recordClass} created before {@code createdBefore}.
+         * Deletes records of {@code recordClass} created before {@code createdBefore} for the tenant,
+         * optionally scoped to {@code customerId} (when non-null).
          *
          * @return how many rows were removed
          */
-        int erase(RetentionClass.RecordClass recordClass, TenantId tenantId, Instant createdBefore);
+        default int erase(RetentionClass.RecordClass recordClass, TenantId tenantId, CustomerId customerId, Instant createdBefore) {
+            return erase(recordClass, tenantId, createdBefore);
+        }
 
         /**
-         * Strips personal data while keeping the record's substantive content.
+         * Deletes records of {@code recordClass} created before {@code createdBefore} for the tenant.
+         *
+         * @return how many rows were removed
+         */
+        default int erase(RetentionClass.RecordClass recordClass, TenantId tenantId, Instant createdBefore) {
+            return 0;
+        }
+
+        /**
+         * Strips personal data while keeping the record's substantive content for the tenant,
+         * optionally scoped to {@code customerId} (when non-null).
          *
          * @return how many rows were anonymised
          */
-        int anonymise(RetentionClass.RecordClass recordClass, TenantId tenantId, Instant createdBefore);
+        default int anonymise(RetentionClass.RecordClass recordClass, TenantId tenantId, CustomerId customerId, Instant createdBefore) {
+            return anonymise(recordClass, tenantId, createdBefore);
+        }
+
+        /**
+         * Strips personal data while keeping the record's substantive content for the tenant.
+         *
+         * @return how many rows were anonymised
+         */
+        default int anonymise(RetentionClass.RecordClass recordClass, TenantId tenantId, Instant createdBefore) {
+            return 0;
+        }
     }
 
     public RetentionService(Clock clock, OutboxRepository outboxRepository, RetentionActions actions) {
@@ -79,8 +103,8 @@ public class RetentionService {
             var resolution = RetentionCapabilities.resolve(perClass.recordClass(), perClass.outcome());
 
             int affected = switch (resolution.performed()) {
-                case ERASE -> actions.erase(perClass.recordClass(), tenantId, now);
-                case ANONYMISE -> actions.anonymise(perClass.recordClass(), tenantId, now);
+                case ERASE -> actions.erase(perClass.recordClass(), tenantId, customerId, now);
+                case ANONYMISE -> actions.anonymise(perClass.recordClass(), tenantId, customerId, now);
                 case RETAIN -> 0;
             };
             erased += resolution.performed() == ErasureDecision.Outcome.ERASE ? affected : 0;
@@ -129,6 +153,23 @@ public class RetentionService {
                                        TenantId tenantId, CustomerId customerId) {
         return execute(ErasureDecision.evaluate(policy, oldestRecord, clock.instant()),
             tenantId, customerId);
+    }
+
+    /** Convenience: build the plan from a policy and the age of each class for tenant-wide execution. */
+    public RetentionReport applyPolicy(Map<RetentionClass.RecordClass, RetentionClass> policy,
+                                       Map<RetentionClass.RecordClass, Instant> oldestRecord,
+                                       TenantId tenantId) {
+        return applyPolicy(policy, oldestRecord, tenantId, null);
+    }
+
+    /**
+     * Applies a plan for all records of the tenant (not customer-scoped).
+     *
+     * @param plan     the decision to execute
+     * @param tenantId tenant the request came from
+     */
+    public RetentionReport execute(ErasureDecision.Plan plan, TenantId tenantId) {
+        return execute(plan, tenantId, null);
     }
 
     /** Exposes the factory's random-id helper so callers without a natural key can still emit. */

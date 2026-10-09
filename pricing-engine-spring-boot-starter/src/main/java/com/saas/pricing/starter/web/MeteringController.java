@@ -14,6 +14,7 @@ import com.saas.pricing.metering.model.MeterEvent;
 import com.saas.pricing.metering.model.TimeWindow;
 import com.saas.pricing.starter.EnterprisePricingService;
 import com.saas.pricing.starter.web.dto.PricingDtos;
+import com.saas.pricing.starter.web.dto.PricingDtos.MeterEventDto;
 import jakarta.validation.Valid;
 
 import org.springframework.http.ResponseEntity;
@@ -43,15 +44,27 @@ public class MeteringController {
     private final UsageMeteringEngine meteringEngine;
     private final EnterprisePricingService pricingService;
     private final com.saas.pricing.starter.tenant.TenantGuard tenantGuard;
+    private final String defaultCurrency;
+
+    public MeteringController(
+        UsageMeteringEngine meteringEngine,
+        EnterprisePricingService pricingService,
+        com.saas.pricing.starter.tenant.TenantGuard tenantGuard,
+        com.saas.pricing.starter.PricingEngineProperties properties
+    ) {
+        this.tenantGuard = tenantGuard;
+        this.meteringEngine = Objects.requireNonNull(meteringEngine, "meteringEngine cannot be null");
+        this.pricingService = pricingService;
+        this.defaultCurrency = (properties != null && properties.getDefaultCurrency() != null)
+            ? properties.getDefaultCurrency() : "USD";
+    }
 
     public MeteringController(
         UsageMeteringEngine meteringEngine,
         EnterprisePricingService pricingService,
         com.saas.pricing.starter.tenant.TenantGuard tenantGuard
     ) {
-        this.tenantGuard = tenantGuard;
-        this.meteringEngine = Objects.requireNonNull(meteringEngine, "meteringEngine cannot be null");
-        this.pricingService = pricingService;
+        this(meteringEngine, pricingService, tenantGuard, null);
     }
 
     @PostMapping("/events")
@@ -62,7 +75,7 @@ public class MeteringController {
     }
 
     @PostMapping("/events/batch")
-    public ResponseEntity<List<IngestionResult>> ingestBatch(@RequestBody List<PricingDtos.MeterEventDto> dtos) {
+    public ResponseEntity<List<IngestionResult>> ingestBatch(@RequestBody List<@Valid MeterEventDto> dtos) {
         if (dtos == null || dtos.isEmpty()) {
             throw new IllegalArgumentException("Batch request cannot be empty");
         }
@@ -119,7 +132,7 @@ public class MeteringController {
             .tenantId(tenantId)
             .planCode(request.planCode())
             .evaluationTime(window.endTime())
-            .targetCurrency(CurrencyUnit.of(request.targetCurrency() != null ? request.targetCurrency() : "USD"));
+            .targetCurrency(CurrencyUnit.of(request.targetCurrency() != null ? request.targetCurrency() : defaultCurrency));
 
         customerId.ifPresent(builder::customerId);
         billableItems.forEach(builder::item);

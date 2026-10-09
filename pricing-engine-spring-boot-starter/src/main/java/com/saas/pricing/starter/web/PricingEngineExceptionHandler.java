@@ -51,6 +51,17 @@ public class PricingEngineExceptionHandler {
         return problem;
     }
 
+    /** Method parameter validation failures (e.g. collection element validation). */
+    @ExceptionHandler(org.springframework.web.method.annotation.HandlerMethodValidationException.class)
+    public ProblemDetail handleMethodValidation(org.springframework.web.method.annotation.HandlerMethodValidationException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, "Request parameter or body failed validation");
+        problem.setTitle("Validation failed");
+        problem.setType(URI.create(PROBLEM_BASE + "validation-failed"));
+        problem.setProperty("code", "VALIDATION_FAILED");
+        return problem;
+    }
+
     /**
      * Invalid pricing input (unknown plan, malformed quantity, bad currency code, negative
      * quantity). These are caller errors, not server faults.
@@ -89,6 +100,23 @@ public class PricingEngineExceptionHandler {
         problem.setTitle("Request rejected");
         problem.setType(URI.create(PROBLEM_BASE + "request-rejected"));
         problem.setProperty("code", "REQUEST_REJECTED");
+        return problem;
+    }
+
+    /**
+     * Missing request headers, parameters, path variables, type conversion failures, or
+     * unreadable JSON bodies. These are caller client errors, mapped to 400 Bad Request.
+     */
+    @ExceptionHandler({
+        org.springframework.web.bind.ServletRequestBindingException.class,
+        org.springframework.http.converter.HttpMessageNotReadableException.class,
+        org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class
+    })
+    public ProblemDetail handleBindingAndConversionErrors(Exception ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, sanitize(ex));
+        problem.setTitle("Invalid request");
+        problem.setType(URI.create(PROBLEM_BASE + "invalid-request"));
+        problem.setProperty("code", "INVALID_REQUEST");
         return problem;
     }
 

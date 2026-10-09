@@ -12,6 +12,8 @@ import com.saas.pricing.core.spi.PaymentProcessor;
 import com.saas.pricing.starter.tenant.TenantGuard;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -104,11 +106,11 @@ public class InvoiceCollectionController {
      * @param processorRef    the processor's identifier for that method
      */
     public record CollectRequest(
-        String tenantId,
-        String paymentMethodId,
-        String customerId,
-        PaymentMethodType methodType,
-        String processorRef,
+        @NotBlank String tenantId,
+        @NotBlank String paymentMethodId,
+        @NotBlank String customerId,
+        @NotNull PaymentMethodType methodType,
+        @NotBlank String processorRef,
         String country
     ) {
     }

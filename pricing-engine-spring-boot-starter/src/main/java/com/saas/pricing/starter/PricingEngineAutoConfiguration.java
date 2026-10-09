@@ -25,8 +25,10 @@ import com.saas.pricing.core.spi.impl.ConcurrentMapCacheProvider;
 import com.saas.pricing.core.spi.impl.InMemoryAuditSink;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.spi.impl.InMemoryContractOverrideRepository;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import com.saas.pricing.core.spi.impl.CachedCurrencyExchangeProvider;
 import com.saas.pricing.core.spi.impl.InMemoryCurrencyExchangeProvider;
 import com.saas.pricing.core.spi.impl.InMemoryEntitlementRepository;
 import com.saas.pricing.core.spi.impl.InMemoryWalletRepository;
@@ -130,6 +132,7 @@ public class PricingEngineAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
+    @ConditionalOnWebApplication
     @ConditionalOnProperty(prefix = "pricing.engine", name = "web-enabled", havingValue = "true",
             matchIfMissing = true)
     public com.saas.pricing.starter.web.PricingEngineExceptionHandler pricingEngineExceptionHandler() {
@@ -338,6 +341,7 @@ public class PricingEngineAutoConfiguration {
                 @Override
                 public int erase(com.saas.pricing.core.model.retention.RetentionClass.RecordClass recordClass,
                                  com.saas.pricing.core.model.TenantId tenantId,
+                                 com.saas.pricing.core.model.CustomerId customerId,
                                  java.time.Instant createdBefore) {
                     return 0;
                 }
@@ -345,6 +349,7 @@ public class PricingEngineAutoConfiguration {
                 @Override
                 public int anonymise(com.saas.pricing.core.model.retention.RetentionClass.RecordClass recordClass,
                                      com.saas.pricing.core.model.TenantId tenantId,
+                                     com.saas.pricing.core.model.CustomerId customerId,
                                      java.time.Instant createdBefore) {
                     return 0;
                 }
@@ -473,9 +478,18 @@ public class PricingEngineAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public CurrencyExchangeProvider currencyExchangeProvider() {
+    public CurrencyExchangeProvider currencyExchangeProvider(
+        PricingEngineProperties properties,
+        @Autowired(required = false) CacheProvider<?, ?> cacheProvider
+    ) {
         log.info("Pricing Engine: Initializing default InMemoryCurrencyExchangeProvider");
-        return new InMemoryCurrencyExchangeProvider();
+        CurrencyExchangeProvider provider = new InMemoryCurrencyExchangeProvider();
+        if (properties.isEnableCaching() && cacheProvider != null) {
+            @SuppressWarnings("unchecked")
+            var castCache = (CacheProvider<String, BigDecimal>) (CacheProvider<?, ?>) cacheProvider;
+            return new CachedCurrencyExchangeProvider(provider, castCache);
+        }
+        return provider;
     }
 
     @Bean
@@ -486,12 +500,13 @@ public class PricingEngineAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public FormulaExpressionEvaluator formulaExpressionEvaluator() {
-        return new SpelFormulaExpressionEvaluator();
+    public FormulaExpressionEvaluator formulaExpressionEvaluator(PricingEngineProperties properties) {
+        return new SpelFormulaExpressionEvaluator(properties.getRoundingMode());
     }
 
     @Bean
     @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "pricing.engine", name = "enable-caching", havingValue = "true", matchIfMissing = true)
     public CacheProvider<?, ?> cacheProvider() {
         return new ConcurrentMapCacheProvider<>();
     }
@@ -516,7 +531,8 @@ public class PricingEngineAutoConfiguration {
         CurrencyExchangeProvider currencyExchangeProvider,
         TaxProvider taxProvider,
         AuditSink auditSink,
-        FormulaExpressionEvaluator formulaEvaluator
+        FormulaExpressionEvaluator formulaEvaluator,
+        PricingEngineProperties properties
     ) {
         log.info("Pricing Engine: Initializing enterprise DefaultPricingEngine");
         return new DefaultPricingEngine(
@@ -525,7 +541,8 @@ public class PricingEngineAutoConfiguration {
             currencyExchangeProvider,
             taxProvider,
             auditSink,
-            formulaEvaluator
+            formulaEvaluator,
+            properties.getRoundingMode()
         );
     }
 
@@ -711,6 +728,7 @@ public class PricingEngineAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnBean(UsageMeteringEngine.class)
     @ConditionalOnProperty(prefix = "pricing.engine.streaming", name = "enabled", havingValue = "true", matchIfMissing = true)
     public DefaultMeterEventDispatcher meterEventDispatcher(UsageMeteringEngine usageMeteringEngine) {
         return new DefaultMeterEventDispatcher(usageMeteringEngine);
@@ -718,7 +736,9 @@ public class PricingEngineAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnBean(UsageMeteringEngine.class)
     @ConditionalOnProperty(prefix = "pricing.engine.streaming", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnProperty(prefix = "pricing.engine.streaming", name = "async-rating-enabled", havingValue = "true", matchIfMissing = true)
     public AsyncRatingTriggerService asyncRatingTriggerService(
         UsageMeteringEngine usageMeteringEngine,
         PricingEngine pricingEngine,
@@ -747,6 +767,7 @@ public class PricingEngineAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnBean(UsageMeteringEngine.class)
     @ConditionalOnProperty(prefix = "pricing.engine.streaming", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SpringMeterEventPublisher springMeterEventPublisher(
         UsageMeteringEngine usageMeteringEngine,
@@ -758,7 +779,9 @@ public class PricingEngineAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "pricing.engine.streaming", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public SpringMeterEventListener springMeterEventListener(AsyncRatingTriggerService asyncRatingTriggerService) {
+    public SpringMeterEventListener springMeterEventListener(
+        @Autowired(required = false) AsyncRatingTriggerService asyncRatingTriggerService
+    ) {
         return new SpringMeterEventListener(asyncRatingTriggerService);
     }
 
@@ -855,6 +878,7 @@ public class PricingEngineAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
+    @ConditionalOnWebApplication
     @org.springframework.boot.autoconfigure.condition.ConditionalOnBean(
         com.saas.pricing.core.spi.PaymentProcessor.class)
     @ConditionalOnProperty(prefix = "pricing.engine", name = "web-enabled", havingValue = "true", matchIfMissing = true)
@@ -914,6 +938,8 @@ public class PricingEngineAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnWebApplication
     @ConditionalOnProperty(prefix = "pricing.engine", name = "web-enabled", havingValue = "true", matchIfMissing = true)
     public com.saas.pricing.starter.web.InvoiceController invoiceController(
         EnterprisePricingService enterprisePricingService,
@@ -955,12 +981,15 @@ public class PricingEngineAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnWebApplication
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnBean(UsageMeteringEngine.class)
     @ConditionalOnProperty(prefix = "pricing.engine", name = "web-enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnProperty(prefix = "pricing.engine.metering", name = "enabled", havingValue = "true", matchIfMissing = true)
     public MeteringController meteringController(
         UsageMeteringEngine usageMeteringEngine,
         EnterprisePricingService enterprisePricingService,
-        com.saas.pricing.starter.tenant.TenantGuard tenantGuard
+        com.saas.pricing.starter.tenant.TenantGuard tenantGuard,
+        PricingEngineProperties properties
     ) {
-        return new MeteringController(usageMeteringEngine, enterprisePricingService, tenantGuard);
+        return new MeteringController(usageMeteringEngine, enterprisePricingService, tenantGuard, properties);
     }
 }

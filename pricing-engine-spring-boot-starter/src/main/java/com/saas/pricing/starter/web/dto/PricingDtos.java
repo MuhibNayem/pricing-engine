@@ -40,8 +40,8 @@ public final class PricingDtos {
         String customerId,
         @NotBlank String planCode,
         String targetCurrency,
-        @NotEmpty @Valid List<ItemDto> items,
-        @Valid List<DiscountDto> discounts,
+        @NotEmpty List<@Valid ItemDto> items,
+        List<@Valid DiscountDto> discounts,
         Map<String, Object> attributes
     ) {}
 
@@ -93,7 +93,7 @@ public final class PricingDtos {
         String customerId,
         @NotBlank String planCode,
         String targetCurrency,
-        @NotEmpty @Valid List<ItemDto> items
+        @NotEmpty List<@Valid ItemDto> items
     ) {}
 
     public record WalletDrawdownResponseDto(

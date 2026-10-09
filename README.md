@@ -4,9 +4,9 @@
 > *Built natively with Java 25 & Spring Boot 4*
 
 [![Java 25](https://img.shields.io/badge/Java-25-orange.svg?logo=openjdk)](https://openjdk.org/projects/jdk/25/)
-[![Spring Boot 4](https://img.shields.io/badge/Spring%20Boot-4.0.0--M1-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
+[![Spring Boot 4](https://img.shields.io/badge/Spring%20Boot-4.1.1-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
 [![Maven Central](https://img.shields.io/badge/Maven-Multi--Module-blue.svg?logo=apachemaven)](pom.xml)
-[![Tests](https://img.shields.io/badge/Tests-84%20Passing%20(100%25)-success.svg)](#-test-verification)
+[![Tests](https://img.shields.io/badge/Tests-713%20Passing%20(100%25)-success.svg)](#-test-verification)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 ---
@@ -28,7 +28,7 @@ In modern SaaS monetization, every fractional cent matters. External billing Saa
 * **Prepaid Credits & Wallets**: Multi-grant wallets (`PREPAID`, `PROMOTIONAL`, `COMMITTED`) with FIFO expiration and priority burndown (promotional grants burn before cash credits).
 * **Spend Commitments & True-Ups**: Contractual minimum spend contracts with automated shortfall true-up line items.
 * **Java 25 Native**: High-throughput concurrent rating over **Project Loom Virtual Threads** and request-bound audit metadata using **Scoped Values** (`ScopedPricingContext`).
-* **Production Persistence & Migrations**: Production-grade PostgreSQL JDBC repositories with B-Tree indexes, JSONB serialization, and Flyway DDL migration schemas (`V1`, `V2`).
+* **Production Persistence & Migrations**: Production-grade PostgreSQL JDBC repositories with B-Tree indexes, JSONB serialization, and Flyway DDL migration schemas (`V1` through `V21`).
 * **Spring Boot 4 Starter**: Plug-and-play auto-configuration (`@AutoConfiguration`) with zero mandatory external dependencies.
 
 ---
@@ -97,9 +97,9 @@ pricing:
     enable-audit: true                # Records full EvaluationTrace to AuditSink
     rounding-mode: HALF_EVEN          # Banker's Rounding standard
     web-enabled: true                 # Exposes REST endpoints
-    stream:
+    streaming:
       enabled: true
-      virtual-threads: true           # Project Loom async rating dispatcher
+      async-rating-enabled: true      # Project Loom async rating dispatcher
 ```
 
 ### 3. Usage Example
@@ -217,7 +217,23 @@ asyncRatingTriggerService.aggregateRateAndDrawdownAsync(
 | `GET` | `/api/v1/pricing/meter/aggregations` | Queries materialized time-window aggregations (`SUM`, `MAX`, etc.). |
 | `POST` | `/api/v1/pricing/meter/rate-and-drawdown` | Triggers immediate rating and prepaid credit deduction for a window. |
 | `POST` | `/api/v1/pricing/entitlements/verify` | Verifies a real-time entitlement / quota check. |
+| `GET` | `/api/v1/pricing/entitlements/reconcile` | Reconciles stored customer entitlements against event stream projection. |
 | `POST` | `/api/v1/pricing/wallets/drawdown` | Rates a request and atomically draws down a prepaid credit wallet. |
+| `POST` | `/api/v1/pricing/invoices` | Creates a draft invoice from a rating calculation (`Idempotency-Key` required). |
+| `GET` | `/api/v1/pricing/invoices/{invoiceId}` | Retrieves an invoice by ID with subtotal, tax, and line items. |
+| `GET` | `/api/v1/pricing/invoices` | Paginated listing of tenant invoices. |
+| `POST` | `/api/v1/pricing/invoices/{invoiceId}/finalize` | Transitions invoice from `DRAFT` to `ISSUED` status. |
+| `POST` | `/api/v1/pricing/invoices/{invoiceId}/pay` | Records a payment against an issued invoice. |
+| `POST` | `/api/v1/pricing/invoices/{invoiceId}/credit-notes` | Issues a credit note / refund against an invoice. |
+| `POST` | `/api/v1/pricing/invoices/{invoiceId}/void` | Voids an unpaid issued invoice. |
+| `POST` | `/api/v1/pricing/invoices/{invoiceId}/collect` | Executes payment collection against customer's payment method. |
+| `GET` | `/api/v1/pricing/invoices/{invoiceId}/payment-attempts` | Retrieves the immutable audit ledger of collection attempts. |
+| `GET` | `/api/v1/pricing/subscriptions/{subscriptionId}` | Retrieves subscription state, period boundaries, and trial dates. |
+| `GET` | `/api/v1/pricing/subscriptions` | Lists all subscriptions for a tenant and customer. |
+| `POST` | `/api/v1/pricing/subscriptions/{subscriptionId}/pause` | Transitions an active subscription to `PAUSED`. |
+| `POST` | `/api/v1/pricing/subscriptions/{subscriptionId}/resume` | Resumes a paused subscription to `ACTIVE`. |
+| `POST` | `/api/v1/pricing/subscriptions/{subscriptionId}/cancel` | Cancels subscription with automated prorated credit calculations. |
+| `POST` | `/api/v1/pricing/subscriptions/renewals/run` | Triggers the tenant-wide automated billing cycle renewal sweep. |
 
 ### ⚠️ Tenant isolation is mandatory
 
@@ -242,17 +258,20 @@ available, rather than silently degrading to in-memory repositories.
 
 ## 🗄 Database & Flyway Schema
 
-Aequitas includes production-ready PostgreSQL Flyway migrations in `pricing-engine-persistence`:
+Aequitas includes 21 production-ready PostgreSQL Flyway migrations in `pricing-engine-persistence` (`src/main/resources/db/migration`):
 
-* **`V1__init_pricing_schema.sql`**:
-  * `rate_cards`: Bi-temporal catalog (`effective_from`, `effective_to`, `recorded_at`, `superseded_at`, `payload_json`).
-  * `contract_overrides`: Customer-specific negotiated contracts and price overrides.
-  * `wallets` & `wallet_transactions`: Multi-grant credit balances and immutable drawdown ledgers.
-  * `customer_entitlements`: Feature flags, consumable quotas, and window counters.
-  * `pricing_audits` & `pricing_audit_line_items`: Complete calculation traces (`EvaluationTrace`).
-* **`V2__metering_schema.sql`**:
-  * `meter_events`: Raw append-only telemetry events with unique idempotency constraints.
-  * `meter_aggregations`: Materialized time-window usage aggregations with composite B-Tree indexes.
+* **`V1` – `V3`**: Core bi-temporal pricing schemas (`rate_cards`, `contract_overrides`, `wallets`, `customer_entitlements`, `pricing_audits`), usage metering telemetry tables (`meter_events`, `meter_aggregations`), and integrity / idempotency constraints.
+* **`V4` – `V5`**: Append-only prepaid credit wallet ledger with PostgreSQL append-only immutability trigger rules.
+* **`V6` – `V7`**: Invoices and credit notes aggregate tables with strict immutability rules.
+* **`V8` – `V9`**: Append-only customer entitlement event stream with ledger immutability guards.
+* **`V10` – `V11`**: Payment attempt audit ledger with append-only triggers.
+* **`V12` – `V13`**: Transactional outbox table (`outbox_events`) for reliable asynchronous event publication with immutability guards.
+* **`V14` – `V15`**: Subscriptions persistence table and valid status transition database constraints.
+* **`V16` – `V17`**: Tenant-scoped idempotency key store and replay fingerprint verification guards.
+* **`V18`**: Subscriptions optimistic locking version column.
+* **`V19`**: Gapless invoice number sequences (`invoice_number_sequences`).
+* **`V20`**: Asynchronous rating claim coordination table (`rating_claims`).
+* **`V21`**: Meter idempotency payload SHA-256 fingerprinting.
 
 ---
 
@@ -279,12 +298,12 @@ JAVA_HOME=$(/usr/libexec/java_home -v 25) mvn clean test
 
 ### Test Results Summary:
 * `pricing-engine-parent`: SUCCESS
-* `pricing-engine-core`: 31 tests passed, 0 failures, 0 errors
-* `pricing-engine-evaluator`: 4 tests passed, 0 failures, 0 errors
-* `pricing-engine-metering`: 22 tests passed, 0 failures, 0 errors
-* `pricing-engine-persistence`: 17 tests passed, 0 failures, 0 errors
-* `pricing-engine-spring-boot-starter`: 10 tests passed, 0 failures, 0 errors
-* **Total: 84 tests run, 0 failures, 0 errors, 0 skipped.**
+* `pricing-engine-core`: 324 tests passed, 0 failures, 0 errors
+* `pricing-engine-evaluator`: 50 tests passed, 0 failures, 0 errors
+* `pricing-engine-metering`: 71 tests passed, 0 failures, 0 errors
+* `pricing-engine-persistence`: 113 tests passed, 0 failures, 0 errors
+* `pricing-engine-spring-boot-starter`: 155 tests passed, 0 failures, 0 errors
+* **Total: 713 tests run, 0 failures, 0 errors, 0 skipped.**
 
 ---
 

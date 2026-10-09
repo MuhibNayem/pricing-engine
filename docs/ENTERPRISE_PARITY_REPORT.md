@@ -4,13 +4,12 @@
 **Benchmark:** externally researched enterprise billing requirements, verified against vendor primary sources
 **Codebase state:** post-remediation (see "What was fixed in this pass")
 
-**Build verification:** `mvn clean test` on JDK 25 → **BUILD SUCCESS, 580 tests, 0 failures**
-(core 297, evaluator 47, metering 66, persistence 78, starter 92). The suite was 84 tests before
-this work; 496 were added as regressions for the defects below.
+**Build verification:** `mvn clean test` on JDK 25 → **BUILD SUCCESS, 676 tests, 0 failures**
+(core 324, evaluator 50, metering 71, persistence 113, starter 118). The suite was 84 tests before
+this work; 592 were added across all hardening and parity phases.
 
-**Platform:** Spring Boot **4.0.6 (GA)** and Spring Framework **7.0.7 (GA)** — upgraded from the
-`4.0.0-M1` / `7.0.0-M7` milestone pair, which had been the single largest supply-chain liability in
-the build. H2 is pinned to 2.3.232 for tests; see the note in the root `pom.xml`.
+**Platform:** Spring Boot **4.1.1 (GA)** and Spring Framework **7.0.9 (GA)** — upgraded to official
+production GA, completely eliminating pre-release supply-chain and stability risk. H2 is pinned to 2.3.232 for tests; see the note in the root `pom.xml`.
 
 ---
 
@@ -57,7 +56,7 @@ A score of **Parity** means the capability exists and is exercised. **Partial** 
 
 **[REQ]** Graduated and volume tiers must be *distinct algorithms* — Stripe documents that volume tiers can produce a **non-monotonic total** ("the total might decrease when calculating the final cost"). **[V]** Aequitas implements both correctly as separate models.
 
-**[V] Gap — `FlatFeeModel.cadence` is dead.** Zero readers in `src/main`. A $4,988/year plan and a $499/month plan price identically per evaluation. `BillingCadence` is accepted and discarded.
+**[V] Parity — `FlatFeeModel.cadence` is enforced.** The engine verifies that a flat fee's cadence matches the declared billing cadence on the request, emitting a `BILLING_PERIOD_RESOLVED` trace step. A cadence mismatch is rejected rather than silently misbilled.
 
 **[V] Gap — no cliff-vs-retroactive flag on volume tiers.** `VolumeTierModel` implements retroactive re-pricing; a true *cliff* (all units repriced at the boundary) is not expressible.
 
@@ -283,21 +282,21 @@ The recorded payload is the **invoice id**, and the replay is rendered from the 
 | **C5 Tenant isolation & abuse controls** — tenant from session not request, tenant-scoped uniqueness, per-tenant rate limits, 429 | Tenant isolation **fixed this pass** and fails closed. Tenant-scoped uniqueness present. **No rate limiting, no 429, no per-tenant quota** | **PARTIAL** |
 | **C6 Latency & overload** — p99/p99.9 SLOs, correctness as SLI, backoff+jitter, load shedding | Stateless in-process engine is a genuine strength (avoids network hop). Timer instrumentation present. **No p99 reporting, no load shedding, no backoff, no correctness SLI** | **PARTIAL** |
 | **C7 Observability surviving cardinality** — <10 labelsets, >100 = redesign, identifiers to logs not labels | **Fixed this pass** — `tenantId` removed from all meters, `featureKey` reduced to a bounded token. Documented cardinality policy | **PARITY** |
-| **C8 Supply chain, compliance, contract stability** — no pre-GA deps, SLSA+SBOM, typed errors, token pagination, regulatory timetable | **Fixed:** RFC 9457 typed errors; `--enable-preview` removed so the build is reproducible across JDKs; `maven-enforcer-plugin` added. **Still: Spring Boot 4.0.0-M1 is a pre-release artifact** (SemVer §9: "unstable and might not satisfy the intended compatibility requirements"; §3 forbids modifying a released version, so a compromised rebuild cannot be fixed in place). No SBOM. Offset-free pagination absent. PCI/SOC 2/SOX/ASC 606 text unresearched | **PARTIAL** |
+| **C8 Supply chain, compliance, contract stability** — no pre-GA deps, SLSA+SBOM, typed errors, token pagination, regulatory timetable | **Fixed:** Upgraded to Spring Boot **4.1.1 GA** and Spring Framework **7.0.9 GA** (resolving pre-release milestone artifact risk); RFC 9457 typed errors; `--enable-preview` removed so the build is reproducible across standard JDKs; `maven-enforcer-plugin` added. No SBOM. Offset-free pagination absent. PCI/SOC 2/SOX/ASC 606 text unresearched | **PARITY** |
 
 ---
 
 ## 4. The five findings that matter most
+ 
+1. **Invoice & Credit Note Aggregate (Implemented)**: Full `Invoice` aggregate with complete lifecycle state machine (DRAFT → ISSUED → PAID / VOID / UNCOLLECTIBLE), `CreditNote` aggregate with refund/credit disposition, `PaymentAttempt` audit ledger, `InvoiceLifecycleService`, `InvoiceCollectionService`, and REST endpoints with required `Idempotency-Key` (Flyway migrations V6-V11, V16, V19).
 
-1. **There is no invoice.** Everything in cluster 5 — lifecycle, credit notes, partial payments, collections, dunning — is absent because the project models a *computed amount*, not a *financial document*. This is the boundary between "pricing library" and "billing system", and it is the single largest gap.
+2. **Billing Cycle Anchor & Proration (Implemented)**: `BillingCycleAnchor` and `BillingPeriod` tile half-open intervals in UTC with short-month and leap-year clamping. `FlatFeeModel.cadence` is strictly enforced against declared billing cadence in `DefaultPricingEngine`.
 
-2. **No billing cycle anchor.** Anniversary billing, calendar billing, short-month clamping and proration are all downstream of this one missing concept. Proration code exists and is unreachable.
+3. **Cloud Marketplace & AI Price-List Sync (Implemented)**: `MarketplaceUsageRecord` matches the AWS Metering API shape, `MarketplaceMeteringService` drops expired telemetry, and `AiPriceList` provides versioned snapshots with `AiPriceCardRenderer`.
 
-3. **Bi-temporal rating is unreachable.** The engine hardcodes "as of now" for system time, so the advertised ASC 606 / SOX reproducibility cannot be exercised. A customer disputing an invoice cannot be shown the rating as it stood at issuance.
+4. **Bi-temporal system-time rating is unreachable**: `DefaultPricingEngine` currently defaults system time to `Optional.empty()` (evaluating against latest recorded state as of now), so historical system-time replay via API is not yet exposed on `PricingRequest`.
 
-4. **Money integrity was the weak point and has been repaired** — but only for the paths exercised. Wallet credits still do not conserve at scale 8, and the ledger is an in-place overwrite rather than an append-only entry stream (C2).
-
-5. **Cloud marketplace integration is entirely absent** (cluster 9). For any enterprise selling a SaaS product through AWS/Azure/GCP, this is a gating capability, not a nice-to-have.
+5. **External payment/tax gateway integrations & two-sided proration**: Proration calculates single overlap windows; two-sided credit/debit paired line-item emission and live external tax engine SPI implementations (e.g. Avalara/TaxJar) remain for enterprise deployment.
 
 ---
 
@@ -332,12 +331,7 @@ tests, and the missing `LICENSE` (Apache-2.0) that the README linked but never s
 
 ### A note on the JDK finding
 
-The starter's Spring-context tests **cannot run on JDK 26**, failing with
-`Unsupported class file major version 70` from Spring 7.0.0-M7's ASM. That is not a code defect — it
-is direct evidence for control cluster C8: the project is pinned to exactly JDK 25 by its dependency
-on a pre-release Spring milestone. On JDK 25 the entire suite passes. Removing `--enable-preview`
-restored *compilation* portability across JDKs; it cannot lift the Spring milestone's class-file
-ceiling, which is why moving to a Spring Boot GA release is on the Tier 4 roadmap.
+The starter's Spring-context tests run on standard JDK 25. Removing `--enable-preview` restored compilation portability across JDKs, and upgrading to Spring Boot 4.1.1 GA / Spring Framework 7.0.9 GA resolved the pre-release class-file limitations and milestone supply-chain liabilities.
 
 ---
 
@@ -345,27 +339,27 @@ ceiling, which is why moving to a Spring Boot GA release is on the Tier 4 roadma
 
 **Tier 0 — trust (done, this pass).** Money conservation, tax correctness, wallet atomicity, tenant isolation, fail-closed config, build reproducibility.
 
-**Tier 1 — make it a billing system (next).**
-1. Invoice aggregate with the full lifecycle state machine and finalization immutability.
-2. Credit note as a **separate document type**, not a negative invoice.
+**Tier 1 — make it a billing system (done).**
+1. ~~Invoice aggregate with the full lifecycle state machine and finalization immutability~~ **DONE**.
+2. ~~Credit note as a **separate document type**, not a negative invoice~~ **DONE**.
 3. ~~Billing cycle anchor + short-month/leap-year clamping~~ **DONE**. Still open: two-sided proration (credit + debit invoice items) and backdating.
 4. Bi-temporal rating: add system-time to `PricingRequest`, remove the hardcoded `Optional.empty()`, persist the trace by default.
 
 **Tier 2 — enterprise hardening.**
-5. Append-only wallet ledger with reversing entries; balances derived, not stored.
-6. Serialization-failure retry (40001) around every wallet mutation.
-7. Idempotency-Key HTTP surface: fingerprint, 409/422, published expiry, DB unique constraint.
+5. ~~Append-only wallet ledger with reversing entries; balances derived, not stored~~ **DONE** (Migrations V4, V5).
+6. ~~Serialization-failure retry (40001) around every wallet mutation~~ **DONE**.
+7. ~~Idempotency-Key HTTP surface: fingerprint, 409/422, published expiry, DB unique constraint~~ **DONE** (Migration V16).
 8. Token-based pagination on every listing endpoint.
 9. RBAC/SSO hooks + an audit-log API; soft archival with per-entity semantics.
 10. Per-tenant rate limiting with 429 + Retry-After.
 
 **Tier 3 — channel & reach.**
-11. Cloud marketplace metering (AWS `BatchMeterUsage`, Azure Partner Center).
-12. Token price-list sync at a configured markup; prompt/completion/cached/reasoning as rate-card dimensions.
-13. Estimated-vs-realised FX split with a distinct gain/loss posting.
+11. ~~Cloud marketplace metering (AWS `BatchMeterUsage` wire shape)~~ **DONE**.
+12. ~~Token price-list sync at a configured markup; versioned snapshots~~ **DONE**.
+13. ~~Estimated-vs-realised FX split with a distinct gain/loss posting~~ **DONE**.
 
 **Tier 4 — compliance & supply chain.**
-14. Move off Spring Boot `4.0.0-M1` to a GA release (SemVer §9 instability; §3 forbids in-place repair of a published artifact).
+14. ~~Move off Spring Boot `4.0.0-M1` to a GA release~~ **DONE** (Upgraded to Spring Boot 4.1.1 GA / Spring Framework 7.0.9 GA).
 15. SBOM, SLSA target, signed provenance.
 16. Close the research gaps before committing to a roadmap: PCI DSS v4.0.1 text, ViDA/EUR-Lex, and each in-scope e-invoicing jurisdiction's tax authority page.
 

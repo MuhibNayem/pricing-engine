@@ -52,6 +52,7 @@ public final class DefaultPricingEngine implements PricingEngine {
     private final FormulaExpressionEvaluator formulaEvaluator;
     private final ModelEvaluator modelEvaluator;
     private final DiscountEngine discountEngine;
+    private final RoundingMode roundingMode;
 
     public DefaultPricingEngine(
         RateCardRepository rateCardRepository,
@@ -61,7 +62,7 @@ public final class DefaultPricingEngine implements PricingEngine {
         FormulaExpressionEvaluator formulaEvaluator
     ) {
         this(rateCardRepository, new HierarchicalRateCardResolver(rateCardRepository, null),
-            currencyExchangeProvider, taxProvider, auditSink, formulaEvaluator);
+            currencyExchangeProvider, taxProvider, auditSink, formulaEvaluator, RoundingMode.HALF_EVEN);
     }
 
     public DefaultPricingEngine(
@@ -72,6 +73,19 @@ public final class DefaultPricingEngine implements PricingEngine {
         AuditSink auditSink,
         FormulaExpressionEvaluator formulaEvaluator
     ) {
+        this(rateCardRepository, hierarchyResolver, currencyExchangeProvider, taxProvider,
+            auditSink, formulaEvaluator, RoundingMode.HALF_EVEN);
+    }
+
+    public DefaultPricingEngine(
+        RateCardRepository rateCardRepository,
+        HierarchicalRateCardResolver hierarchyResolver,
+        CurrencyExchangeProvider currencyExchangeProvider,
+        TaxProvider taxProvider,
+        AuditSink auditSink,
+        FormulaExpressionEvaluator formulaEvaluator,
+        RoundingMode roundingMode
+    ) {
         this.rateCardRepository = Objects.requireNonNull(rateCardRepository, "rateCardRepository cannot be null");
         this.hierarchyResolver = hierarchyResolver != null ? hierarchyResolver : new HierarchicalRateCardResolver(rateCardRepository, null);
         this.currencyExchangeProvider = Objects.requireNonNull(currencyExchangeProvider, "currencyExchangeProvider cannot be null");
@@ -80,6 +94,7 @@ public final class DefaultPricingEngine implements PricingEngine {
         this.formulaEvaluator = formulaEvaluator; // Optional
         this.modelEvaluator = new ModelEvaluator();
         this.discountEngine = new DiscountEngine();
+        this.roundingMode = roundingMode != null ? roundingMode : RoundingMode.HALF_EVEN;
     }
 
     @Override
@@ -222,9 +237,9 @@ public final class DefaultPricingEngine implements PricingEngine {
 
             // Calculate item-level taxes on the net of line-level discounts
             List<TaxRate> taxRates = taxProvider.resolveTaxRates(request.tenantId(), itemReq.itemCode(), combinedAttrs);
-            Money lineTax = taxForNet(lineNet, taxRates, targetCurrency);
+            Money lineTax = taxForNet(lineNet, taxRates, targetCurrency, this.roundingMode);
             for (TaxRate taxRate : taxRates) {
-                BigDecimal taxFactor = taxRate.percentage().divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_EVEN);
+                BigDecimal taxFactor = taxRate.percentage().divide(BigDecimal.valueOf(100), 8, this.roundingMode);
                 Money taxForRate = lineNet.times(taxFactor);
                 itemTrace.add(TraceStep.of("TAX_APPLIED", "Tax %s (%s%% in %s): %s".formatted(
                     taxRate.taxCode(), taxRate.percentage(), taxRate.jurisdiction(), taxForRate
@@ -287,7 +302,7 @@ public final class DefaultPricingEngine implements PricingEngine {
                 // Tax is due on the amount actually charged. Reducing the net by an invoice-level
                 // discount must reduce the tax by the same proportion, otherwise every
                 // invoice-level discount over-charges VAT/GST.
-                Money newTax = taxForNet(newNet, lineTaxRates.get(i), targetCurrency);
+                Money newTax = taxForNet(newNet, lineTaxRates.get(i), targetCurrency, this.roundingMode);
                 Money newTotal = newNet.plus(newTax).roundToCurrency();
                 recomputedTax = recomputedTax.plus(newTax);
 
@@ -444,12 +459,12 @@ public final class DefaultPricingEngine implements PricingEngine {
      * invoice-level discount is later apportioned onto it. Keeping one implementation is what
      * guarantees the invoice total equals the sum of its lines.
      */
-    private static Money taxForNet(Money net, List<TaxRate> taxRates, CurrencyUnit currency) {
+    private static Money taxForNet(Money net, List<TaxRate> taxRates, CurrencyUnit currency, RoundingMode roundingMode) {
         Money tax = Money.zero(currency);
         for (TaxRate taxRate : taxRates) {
-            BigDecimal taxFactor = taxRate.percentage().divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_EVEN);
+            BigDecimal taxFactor = taxRate.percentage().divide(BigDecimal.valueOf(100), 8, roundingMode);
             tax = tax.plus(net.times(taxFactor));
         }
-        return tax.roundToCurrency();
+        return tax.roundTo(currency.defaultFractionDigits(), roundingMode);
     }
 }

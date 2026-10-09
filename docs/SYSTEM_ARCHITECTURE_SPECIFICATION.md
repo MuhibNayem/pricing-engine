@@ -287,13 +287,13 @@ erDiagram
 ## 5. Concurrency & High-Throughput Loom Architecture
 
 ### Java 25 Project Loom Virtual Threads
-* High-volume batch requests evaluated via [`BatchPricingEngine`](file:///home/amnayem/Projects/pricing-engine/pricing-engine-core/src/main/java/com/saas/pricing/core/engine/BatchPricingEngine.java) using `Executors.newVirtualThreadPerTaskExecutor()`.
+* High-volume batch requests evaluated via [`BatchPricingEngine`](file:///Users/a.k.mmuhibullahnayem/Developer/pricing-engine/pricing-engine-core/src/main/java/com/saas/pricing/core/engine/BatchPricingEngine.java) using `Executors.newVirtualThreadPerTaskExecutor()`.
 * Virtual threads allow thousands of concurrent pricing calculations without thread pool starvation or context-switching penalties.
 * Memory footprint per virtual thread is hundreds of bytes, enabling near-instantaneous scaling on multicore nodes.
 
 ### Java 25 Scoped Values Context Management
 * Traditional `ThreadLocal` storage suffers from memory leaks and inheritance overhead in virtual thread architectures.
-* [`ScopedPricingContext`](file:///home/amnayem/Projects/pricing-engine/pricing-engine-spring-boot-starter/src/main/java/com/saas/pricing/starter/context/ScopedPricingContext.java) utilizes Java 25 `ScopedValue` (`ScopedValue<PricingContext>`) to pass immutable tenant credentials, customer IDs, and audit correlation IDs cleanly down the calculation call tree:
+* [`ScopedPricingContext`](file:///Users/a.k.mmuhibullahnayem/Developer/pricing-engine/pricing-engine-spring-boot-starter/src/main/java/com/saas/pricing/starter/context/ScopedPricingContext.java) utilizes Java 25 `ScopedValue` (`ScopedValue<PricingContext>`) to pass immutable tenant credentials, customer IDs, and audit correlation IDs cleanly down the calculation call tree:
 
 ```java
 ScopedPricingContext.runWith(tenantId, customerId, correlationId, () -> {

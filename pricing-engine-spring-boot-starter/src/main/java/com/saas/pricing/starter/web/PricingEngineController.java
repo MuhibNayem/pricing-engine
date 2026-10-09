@@ -48,6 +48,7 @@ public class PricingEngineController {
     private final EnterprisePricingService pricingService;
     private final com.saas.pricing.starter.tenant.TenantGuard tenantGuard;
     private final boolean allowRequestDiscounts;
+    private final String defaultCurrency;
 
     public PricingEngineController(
         EnterprisePricingService pricingService,
@@ -57,6 +58,7 @@ public class PricingEngineController {
         this.pricingService = pricingService;
         this.tenantGuard = tenantGuard;
         this.allowRequestDiscounts = properties.isAllowRequestDiscounts();
+        this.defaultCurrency = properties.getDefaultCurrency() != null ? properties.getDefaultCurrency() : "USD";
     }
 
     @GetMapping("/health")
@@ -121,7 +123,7 @@ public class PricingEngineController {
             .tenantId(tenantGuard.verify(dto.tenantId()))
             .customerId(dto.customerId())
             .planCode(dto.planCode())
-            .targetCurrency(CurrencyUnit.of(dto.targetCurrency() != null ? dto.targetCurrency() : "USD"));
+            .targetCurrency(CurrencyUnit.of(dto.targetCurrency() != null ? dto.targetCurrency() : defaultCurrency));
 
         if (dto.items() != null) {
             for (var item : dto.items()) {
@@ -141,7 +143,7 @@ public class PricingEngineController {
     }
 
     private PricingRequest mapToDomainRequest(PricingDtos.PricingEvaluationRequestDto dto) {
-        CurrencyUnit targetCurrency = CurrencyUnit.of(dto.targetCurrency() != null ? dto.targetCurrency() : "USD");
+        CurrencyUnit targetCurrency = CurrencyUnit.of(dto.targetCurrency() != null ? dto.targetCurrency() : defaultCurrency);
         PricingRequest.Builder builder = PricingRequest.builder()
             .tenantId(tenantGuard.verify(dto.tenantId()))
             .planCode(dto.planCode())

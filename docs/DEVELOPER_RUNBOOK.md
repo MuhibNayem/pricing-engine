@@ -7,7 +7,7 @@ A comprehensive engineering guide for integrating, configuring, operating, and e
 ## 1. Quickstart & Environment Setup
 
 ### Prerequisites
-* **Java**: OpenJDK 25 (with `--enable-preview` enabled)
+* **Java**: OpenJDK 25 (standard release; no preview flags required)
 * **Build Tool**: Apache Maven 3.9+
 * **Database (Optional for production)**: PostgreSQL 15+ (H2 in PostgreSQL mode supported for testing)
 * **Message Broker (Optional for streaming)**: Apache Kafka 3.x, RabbitMQ, or AWS SQS
@@ -33,9 +33,9 @@ pricing:
     enable-audit: true                # Persists full evaluation traces to AuditSink
     rounding-mode: HALF_EVEN          # Banker's Rounding standard
     web-enabled: true                 # Exposes /api/v1/pricing & /api/v1/pricing/meter REST endpoints
-    stream:
+    streaming:
       enabled: true
-      virtual-threads: true           # Project Loom virtual thread dispatcher
+      async-rating-enabled: true      # Project Loom virtual thread dispatcher
 ```
 
 ---

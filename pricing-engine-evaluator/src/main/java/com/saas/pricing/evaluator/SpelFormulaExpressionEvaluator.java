@@ -119,11 +119,18 @@ public final class SpelFormulaExpressionEvaluator implements FormulaExpressionEv
 
     /** Bounded LRU of parsed expressions. See {@link ParsedExpressionCache} for thread-safety. */
     private final ParsedExpressionCache expressionCache;
+    private final RoundingMode roundingMode;
 
-    /** Creates an evaluator with the default limits. */
+    /** Creates an evaluator with the default limits and banker's rounding. */
     public SpelFormulaExpressionEvaluator() {
         this(DEFAULT_MAX_EXPRESSION_LENGTH, DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL_MILLIS,
-            DEFAULT_MAX_RESULT_PRECISION, DEFAULT_MAX_RESULT_SCALE);
+            DEFAULT_MAX_RESULT_PRECISION, DEFAULT_MAX_RESULT_SCALE, RoundingMode.HALF_EVEN);
+    }
+
+    /** Creates an evaluator with the specified rounding mode. */
+    public SpelFormulaExpressionEvaluator(RoundingMode roundingMode) {
+        this(DEFAULT_MAX_EXPRESSION_LENGTH, DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL_MILLIS,
+            DEFAULT_MAX_RESULT_PRECISION, DEFAULT_MAX_RESULT_SCALE, roundingMode);
     }
 
     /**
@@ -135,6 +142,19 @@ public final class SpelFormulaExpressionEvaluator implements FormulaExpressionEv
      */
     public SpelFormulaExpressionEvaluator(int maxExpressionLength, int cacheCapacity, long cacheTtlMillis,
                                           int maxResultPrecision, int maxResultScale) {
+        this(maxExpressionLength, cacheCapacity, cacheTtlMillis, maxResultPrecision, maxResultScale, RoundingMode.HALF_EVEN);
+    }
+
+    /**
+     * @param maxExpressionLength  maximum accepted expression length in characters
+     * @param cacheCapacity        maximum number of parsed expressions retained
+     * @param cacheTtlMillis       how long an unused parsed expression is retained
+     * @param maxResultPrecision   maximum significant digits allowed in a result
+     * @param maxResultScale       maximum scale allowed in a result
+     * @param roundingMode         rounding mode for financial currency rounding
+     */
+    public SpelFormulaExpressionEvaluator(int maxExpressionLength, int cacheCapacity, long cacheTtlMillis,
+                                          int maxResultPrecision, int maxResultScale, RoundingMode roundingMode) {
         if (maxExpressionLength <= 0) {
             throw new IllegalArgumentException("maxExpressionLength must be positive");
         }
@@ -150,6 +170,7 @@ public final class SpelFormulaExpressionEvaluator implements FormulaExpressionEv
         this.maxExpressionLength = maxExpressionLength;
         this.maxResultPrecision = maxResultPrecision;
         this.maxResultScale = maxResultScale;
+        this.roundingMode = roundingMode != null ? roundingMode : RoundingMode.HALF_EVEN;
         this.expressionCache = new ParsedExpressionCache(
             new SpelExpressionParser(new SpelParserConfiguration(
                 SpelCompilerMode.OFF, null, false, false, maxExpressionLength)),
@@ -184,7 +205,7 @@ public final class SpelFormulaExpressionEvaluator implements FormulaExpressionEv
         SimpleEvaluationContext context = buildContext(variables);
         BigDecimal value = toBigDecimal(parsed.getValue(context));
         guardMagnitude(value);
-        return currencyScale < 0 ? value : value.setScale(currencyScale, RoundingMode.HALF_EVEN);
+        return currencyScale < 0 ? value : value.setScale(currencyScale, this.roundingMode);
     }
 
     /**
