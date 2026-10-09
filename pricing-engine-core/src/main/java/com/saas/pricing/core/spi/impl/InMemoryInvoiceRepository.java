@@ -33,7 +33,7 @@ public class InMemoryInvoiceRepository implements InvoiceRepository {
     private final Map<String, List<CreditNote>> creditNotes = new ConcurrentHashMap<>();
 
     private static String key(TenantId tenantId, String invoiceId) {
-        return tenantId.value().toUpperCase(java.util.Locale.ROOT) + "::" + invoiceId;
+        return tenantId.value() + "::" + invoiceId;
     }
 
     @Override

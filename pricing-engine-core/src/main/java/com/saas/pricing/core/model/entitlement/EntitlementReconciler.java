@@ -187,13 +187,17 @@ public final class EntitlementReconciler {
                 drift = DriftType.NONE;
                 remediation = Remediation.NONE;
             } else {
-                // Both active: compare the numbers.
+                // Both active: compare the numbers, but only those the stream can actually derive.
+                // Usage is not part of the entitlement event stream, so the projection reports it as
+                // unknown (empty) rather than as zero; comparing unknown against stored would flag
+                // every consumed quota as a mismatch and send operators chasing a non-defect.
                 Optional<BigDecimal> derivedUsage = derivedState == null
                     ? Optional.empty() : derivedState.currentUsage();
                 Optional<BigDecimal> storedUsage = storedState == null
                     ? Optional.empty() : Optional.ofNullable(storedState.currentUsage());
-                boolean usageAgrees = derivedUsage.map(d -> storedUsage.map(s -> d.compareTo(s) == 0).orElse(false))
-                    .orElseGet(() -> storedUsage.isEmpty());
+                boolean usageAgrees = derivedUsage
+                    .map(d -> storedUsage.map(s -> d.compareTo(s) == 0).orElse(false))
+                    .orElse(true);
 
                 drift = usageAgrees ? DriftType.NONE : DriftType.USAGE_MISMATCH;
                 remediation = usageAgrees ? Remediation.NONE : Remediation.REPLAY_USAGE;

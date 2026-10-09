@@ -120,8 +120,12 @@ public final class SerializationFailureRetry {
 
     /** Exposed for testing: deterministic upper bound on the wait before attempt {@code n+1}. */
     static long backoffMillis(int attempt) {
-        long exponential = BASE_BACKOFF_MILLIS * (1L << (attempt - 1));
-        long capped = Math.min(exponential, MAX_BACKOFF_MILLIS);
+        // Shifting past 62 overflows a long into negative territory, which would turn a long backoff
+        // into a sleep(0) retry storm. The cap below makes the clamp moot, but the shift must not
+        // overflow on the way there.
+        int shift = Math.min(attempt - 1, 62);
+        long exponential = BASE_BACKOFF_MILLIS * (1L << shift);
+        long capped = Math.min(Math.max(exponential, 0), MAX_BACKOFF_MILLIS);
         // Full jitter: a uniform draw in [0, capped]. Without jitter, transactions aborted at the
         // same instant retry at the same instant and collide again.
         return capped == 0 ? 0 : ThreadLocalRandom.current().nextLong(capped + 1);

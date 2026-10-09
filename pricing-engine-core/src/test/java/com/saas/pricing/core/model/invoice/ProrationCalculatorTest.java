@@ -121,14 +121,17 @@ class ProrationCalculatorTest {
     class Edges {
 
         @Test
-        @DisplayName("a change at the very start prorates the whole period")
+        @DisplayName("a change at the very start bills the whole period at the new price, without a credit")
         void changeAtPeriodStart() {
             var adjustments = ProrationCalculator.forPlanChange("SEATS", "BASIC", Money.of("10.00", USD),
                 "PRO", Money.of("20.00", USD), START, END, START, USD);
 
-            assertThat(adjustments.get(0).amount().amount()).isEqualByComparingTo("10.00");
-            assertThat(adjustments.get(1).amount().amount()).isEqualByComparingTo("20.00");
-            assertThat(adjustments.get(0).factor()).isEqualByComparingTo("1.0");
+            assertThat(adjustments).hasSize(1);
+            assertThat(adjustments.getFirst().isCredit())
+                .as("the old plan was never in force this period, so there is nothing to credit")
+                .isFalse();
+            assertThat(adjustments.getFirst().amount().amount()).isEqualByComparingTo("20.00");
+            assertThat(adjustments.getFirst().factor()).isEqualByComparingTo("1.0");
         }
 
         @Test
@@ -218,6 +221,53 @@ class ProrationCalculatorTest {
 
             assertThat(sum.amount()).isEqualByComparingTo("5.00");
             assertThat(sum).isEqualTo(ProrationCalculator.netChange(adjustments));
+        }
+    }
+
+    @Nested
+    @DisplayName("Effective before the period")
+    class EffectiveBeforeThePeriod {
+
+        @Test
+        @DisplayName("a change effective at or before the period start credits nothing")
+        void noOldPlanCreditWhenTheOldPlanWasNeverInForce() {
+            // The old plan was not in force during this period, so a full-period credit refunds a
+            // charge the period never carried. Only the new plan's full debit belongs here.
+            var adjustments = ProrationCalculator.forPlanChange("SEATS", "BASIC", Money.of("10.00", USD),
+                "PRO", Money.of("20.00", USD), START, END, START.minusSeconds(3600), USD);
+
+            assertThat(adjustments).hasSize(1);
+            assertThat(adjustments.getFirst().kind()).isEqualTo(ProrationAdjustment.Kind.DEBIT);
+            assertThat(adjustments.getFirst().amount().amount()).isEqualByComparingTo("20.00");
+            assertThat(adjustments.getFirst().factor()).isEqualByComparingTo("1");
+        }
+
+        @Test
+        @DisplayName("a change effective at the exact period start credits nothing")
+        void exactStartIsNotInsideThePeriod() {
+            var adjustments = ProrationCalculator.forPlanChange("SEATS", "BASIC", Money.of("10.00", USD),
+                "PRO", Money.of("20.00", USD), START, END, START, USD);
+
+            assertThat(adjustments).hasSize(1);
+            assertThat(adjustments.getFirst().isCredit()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a change effective after the period end produces nothing")
+        void afterThePeriodProducesNothing() {
+            var adjustments = ProrationCalculator.forPlanChange("SEATS", "BASIC", Money.of("10.00", USD),
+                "PRO", Money.of("20.00", USD), START, END, END.plusSeconds(60), USD);
+
+            assertThat(adjustments).isEmpty();
+        }
+
+        @Test
+        @DisplayName("negative plan prices are refused instead of being masked with abs()")
+        void negativePricesRefused() {
+            assertThatThrownBy(() -> ProrationCalculator.forPlanChange("SEATS", "BASIC",
+                Money.of("-10.00", USD), "PRO", Money.of("20.00", USD), START, END, MID, USD))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be negative");
         }
     }
 }

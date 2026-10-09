@@ -65,11 +65,19 @@ public record Money(BigDecimal amount, CurrencyUnit currency) implements Compara
     }
 
     public Money dividedBy(BigDecimal divisor) {
+        return dividedBy(divisor, CALCULATION_SCALE);
+    }
+
+    /**
+     * Divides at an explicit scale, for callers whose precision policy differs from the default
+     * calculation scale (for example minor-unit conversion for a currency with 0 or 3 digits).
+     */
+    public Money dividedBy(BigDecimal divisor, int scale) {
         Objects.requireNonNull(divisor, "Divisor cannot be null");
         if (divisor.compareTo(BigDecimal.ZERO) == 0) {
             throw new ArithmeticException("Cannot divide Money by zero");
         }
-        return new Money(this.amount.divide(divisor, CALCULATION_SCALE, DEFAULT_ROUNDING_MODE), this.currency);
+        return new Money(this.amount.divide(divisor, scale, DEFAULT_ROUNDING_MODE), this.currency);
     }
 
     public Money dividedBy(long divisor) {

@@ -70,7 +70,7 @@ class ErasureDecisionTest {
         }
 
         @Test
-        @DisplayName("a blanket delete is refused: the ledger is retained under a legal obligation")
+        @DisplayName("a blanket delete is refused: the ledger is kept and only anonymised")
         void ledgerIsNotErased() {
             var plan = ErasureDecision.evaluate(policy(),
                 Map.of(RetentionClass.RecordClass.FINANCIAL_LEDGER, T0), NOW);
@@ -78,13 +78,18 @@ class ErasureDecisionTest {
             var ledger = plan.forClass(RetentionClass.RecordClass.FINANCIAL_LEDGER).orElseThrow();
 
             assertThat(ledger.outcome())
-                .as("destroying invoice and ledger records would breach the statutory duty to keep them")
-                .isEqualTo(ErasureDecision.Outcome.RETAIN);
+                .as("destroying invoice and ledger records would breach the statutory duty to keep "
+                    + "them; once the anonymisation point is reached the personal data is stripped, "
+                    + "not the financial record")
+                .isEqualTo(ErasureDecision.Outcome.ANONYMISE);
             assertThat(ledger.retention().legalBasis())
                 .isEqualTo(RetentionClass.LegalBasis.LEGAL_OBLIGATION);
             assertThat(ledger.reason()).contains("Art. 17(3)");
-            assertThat(plan.isFullyRetained()).isTrue();
+            assertThat(ErasureDecision.shouldAnonymise(ledger.retention(), T0, NOW))
+                .as("evaluate and shouldAnonymise must give the same answer for the same record")
+                .isTrue();
             assertThat(plan.erased()).isEmpty();
+            assertThat(plan.anonymised()).containsExactly(RetentionClass.RecordClass.FINANCIAL_LEDGER);
         }
 
         @Test
@@ -121,9 +126,9 @@ class ErasureDecisionTest {
                 RetentionClass.RecordClass.USAGE_TELEMETRY, Instant.parse("2025-12-01T00:00:00Z")), NOW);
 
             assertThat(plan.erased()).containsExactly(RetentionClass.RecordClass.DIAGNOSTIC);
+            assertThat(plan.anonymised()).containsExactly(RetentionClass.RecordClass.FINANCIAL_LEDGER);
             assertThat(plan.retained())
-                .containsExactlyInAnyOrder(RetentionClass.RecordClass.FINANCIAL_LEDGER,
-                    RetentionClass.RecordClass.USAGE_TELEMETRY);
+                .containsExactly(RetentionClass.RecordClass.USAGE_TELEMETRY);
             assertThat(plan.isFullyRetained()).isFalse();
         }
 

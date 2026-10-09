@@ -56,6 +56,16 @@ public class InvoiceCollectionService {
                 "Only an OPEN invoice can be collected; this one is " + invoice.status());
         }
 
+        // The method must belong to the customer being billed. Without this, a caller could direct
+        // a charge for one customer's stored instrument against another customer's invoice and rely
+        // on the processor - rather than this domain - to refuse it.
+        if (!method.customerId().equals(invoice.customerId())) {
+            throw new IllegalArgumentException(
+                "Payment method " + method.methodId() + " belongs to customer "
+                    + method.customerId().value() + " but invoice " + invoice.invoiceId()
+                    + " is for " + invoice.customerId().value());
+        }
+
         Money amount = invoice.balanceDue();
         // Refuses a currency mismatch, an expired method, and a method that cannot be charged
         // automatically - each with a message an operator can act on.
@@ -91,7 +101,14 @@ public class InvoiceCollectionService {
         // Ledger first: an unresolved charge is recoverable, an unrecorded charge is not.
         boolean newlyRecorded = attempts.record(attempt);
         if (!newlyRecorded) {
-            return new Result(attempt, invoice, false);
+            // The attempt is already on file. Return the STORED attempt with the unchanged invoice:
+            // returning the freshly derived outcome would let a redelivery report a settlement (or
+            // a different status) that was never applied to the document.
+            PaymentAttempt stored = attempts.findAttempts(method.tenantId(), invoice.invoiceId()).stream()
+                .filter(existing -> existing.attemptId().equals(attempt.attemptId()))
+                .findFirst()
+                .orElse(attempt);
+            return new Result(stored, invoice, false);
         }
 
         // `prior`, NOT the post-write list: the engine's duplicate guard compares the reported

@@ -177,11 +177,23 @@ public final class ErasureDecision {
             Outcome outcome;
             String reason;
             if (retention.isStatutorilyRetained()) {
-                outcome = Outcome.RETAIN;
-                reason = ("Retained under " + retention.legalBasis()
-                    + " (GDPR Art. 17(3)). Statutory retention runs for "
-                    + retention.minimumRetention().toDays() + " days from "
-                    + createdAt.toString() + ".");
+                if (retention.erasable(createdAt, now)) {
+                    // Past the anonymisation point but still within the statutory window: the
+                    // financial record stays, the personal data does not. Returning RETAIN here made
+                    // ANONYMISE unreachable while shouldAnonymise() returned true for the same
+                    // record at the same instant - two answers to one question.
+                    outcome = Outcome.ANONYMISE;
+                    reason = "Retained under " + retention.legalBasis()
+                        + " (GDPR Art. 17(3)); anonymisation point reached on "
+                        + createdAt.plus(retention.erasableAfter().orElseThrow())
+                        + ". Personal data is stripped, the financial record is kept.";
+                } else {
+                    outcome = Outcome.RETAIN;
+                    reason = ("Retained under " + retention.legalBasis()
+                        + " (GDPR Art. 17(3)). Statutory retention runs for "
+                        + retention.minimumRetention().toDays() + " days from "
+                        + createdAt.toString() + ".");
+                }
             } else if (retention.retentionExpired(createdAt, now)) {
                 outcome = Outcome.ERASE;
                 reason = "No statutory basis and retention of "

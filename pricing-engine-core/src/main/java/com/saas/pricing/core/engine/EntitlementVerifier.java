@@ -15,6 +15,12 @@ import java.util.Optional;
  */
 public final class EntitlementVerifier {
 
+    /**
+     * Reported as "remaining" for an unlimited allowance. An exact decimal rather than
+     * {@code Double.MAX_VALUE}, whose binary rounding produces a nonsense figure in audit output.
+     */
+    public static final BigDecimal UNLIMITED_REMAINING = new BigDecimal("1E+24");
+
     public EntitlementDecision verify(
         CustomerEntitlement entitlement,
         BigDecimal requestedUnits,
@@ -23,6 +29,12 @@ public final class EntitlementVerifier {
         Objects.requireNonNull(entitlement, "entitlement cannot be null");
         Objects.requireNonNull(requestedUnits, "requestedUnits cannot be null");
         Objects.requireNonNull(evalTime, "evalTime cannot be null");
+
+        if (requestedUnits.signum() < 0) {
+            throw new IllegalArgumentException(
+                "requestedUnits cannot be negative: " + requestedUnits.toPlainString()
+                    + "; a negative request would increase the remaining allowance");
+        }
 
         if (!entitlement.isEffectiveAt(evalTime)) {
             return EntitlementDecision.denied(
@@ -58,7 +70,7 @@ public final class EntitlementVerifier {
                 requestedUnits,
                 entitlement.currentUsage(),
                 Optional.empty(),
-                BigDecimal.valueOf(Double.MAX_VALUE),
+                UNLIMITED_REMAINING,
                 false,
                 BigDecimal.ZERO,
                 "Unlimited quota allowance"

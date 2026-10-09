@@ -42,6 +42,9 @@ public record PricingResult(
         Objects.requireNonNull(trace, "trace cannot be null");
 
         lineItems = List.copyOf(lineItems);
+        // Freeze the audit trail: a published result must be an immutable value, and its equals must
+        // be structural rather than depending on a trace object that is still being appended to.
+        trace = trace.frozen();
     }
 
     public PricingResult(

@@ -28,6 +28,21 @@ public record RatePlanItem(
         Objects.requireNonNull(metadata, "metadata cannot be null");
 
         if (itemCode.isBlank()) throw new IllegalArgumentException("itemCode cannot be blank");
+        if (includedAllowance.isPresent()) {
+            if (includedAllowance.get().compareTo(BigDecimal.ZERO) < 0) {
+                // A negative allowance increases the billable quantity: the opposite of an allowance.
+                throw new IllegalArgumentException(
+                    "includedAllowance cannot be negative for item '" + itemCode + "'");
+            }
+            if (pricingModel instanceof PricingModel.HybridModel) {
+                // Both would be subtracted from the quantity (here and inside the hybrid model), so
+                // a 5-unit allowance declared twice gives 10 free units and undercharges every
+                // customer. The hybrid model's own includedUnits is the single source of truth.
+                throw new IllegalArgumentException(
+                    "Item '" + itemCode + "' declares both a RatePlanItem allowance and a "
+                        + "HybridModel includedUnits; declare the allowance in the hybrid model only");
+            }
+        }
         metadata = Map.copyOf(metadata);
     }
 

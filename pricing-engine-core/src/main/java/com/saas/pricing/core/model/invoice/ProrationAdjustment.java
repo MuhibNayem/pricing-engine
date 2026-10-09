@@ -101,17 +101,15 @@ public record ProrationAdjustment(
         }
         // The classification must match the side of the pair it belongs to, or downstream revenue
         // recognition will book a subscription start as a mid-cycle adjustment.
-        if (reason.producesCredit() && kind != Kind.CREDIT) {
+        if (kind == Kind.CREDIT && !reason.producesCredit()) {
             throw new IllegalArgumentException(
-                "Operation " + reason + " only produces a credit, but a DEBIT was supplied");
-        }
-        if (reason.producesDebit() && kind != Kind.DEBIT && !reason.producesBoth()) {
-            throw new IllegalArgumentException(
-                "Operation " + reason + " does not produce a debit, but one was supplied");
+                "Operation " + reason + " does not produce a credit line");
         }
         if (kind == Kind.DEBIT && !reason.producesDebit()) {
             throw new IllegalArgumentException(
-                "Operation " + reason + " cannot carry a debit line");
+                reason.producesCredit()
+                    ? "Operation " + reason + " only produces a credit, but a DEBIT was supplied"
+                    : "Operation " + reason + " does not produce a debit line");
         }
     }
 

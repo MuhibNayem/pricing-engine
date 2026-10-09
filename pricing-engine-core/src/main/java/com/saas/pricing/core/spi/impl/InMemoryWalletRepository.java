@@ -34,7 +34,7 @@ public class InMemoryWalletRepository implements WalletRepository {
     private final Map<String, List<LedgerEntry>> ledgerStore = new ConcurrentHashMap<>();
 
     private String key(TenantId tenantId, CustomerId customerId) {
-        return tenantId.value().toUpperCase() + "::" + customerId.value().toUpperCase();
+        return tenantId.value() + "::" + customerId.value();
     }
 
     @Override
@@ -82,21 +82,35 @@ public class InMemoryWalletRepository implements WalletRepository {
     /**
      * {@inheritDoc}
      *
-     * <p>The ledger append happens inside the same {@code compute} as the balance update, so a
-     * caller can never observe (or leave behind) a debited wallet with no corresponding ledger row.
+     * <p>The transaction append happens inside the same {@code compute} as the balance update, so a
+     * caller can never observe (or leave behind) a debited wallet with no corresponding row. Doing
+     * the append after {@link #updateAtomically} returned - as an earlier version did - left exactly
+     * that window, despite the Javadoc claiming otherwise.
      */
     @Override
     public Optional<Wallet> updateAtomicallyAndRecord(TenantId tenantId, CustomerId customerId,
                                                        UnaryOperator<Wallet> mutator,
                                                        List<DrawdownTransaction> transactions) {
+        Objects.requireNonNull(tenantId, "tenantId cannot be null");
+        Objects.requireNonNull(customerId, "customerId cannot be null");
+        Objects.requireNonNull(mutator, "mutator cannot be null");
+
         String walletKey = key(tenantId, customerId);
-        Optional<Wallet> result = updateAtomically(tenantId, customerId, mutator);
-        if (result.isPresent() && transactions != null && !transactions.isEmpty()) {
-            for (DrawdownTransaction tx : transactions) {
-                transactionStore.computeIfAbsent(tx.walletId(), k -> new CopyOnWriteArrayList<>()).add(tx);
+        AtomicReference<Wallet> updated = new AtomicReference<>();
+        walletStore.compute(walletKey, (k, existing) -> {
+            if (existing == null) {
+                return null;
             }
-        }
-        return result;
+            Wallet next = mutator.apply(existing);
+            if (transactions != null && !transactions.isEmpty()) {
+                for (DrawdownTransaction tx : transactions) {
+                    transactionStore.computeIfAbsent(tx.walletId(), x -> new CopyOnWriteArrayList<>()).add(tx);
+                }
+            }
+            updated.set(next);
+            return next;
+        });
+        return Optional.ofNullable(updated.get());
     }
 
     /**
@@ -104,6 +118,9 @@ public class InMemoryWalletRepository implements WalletRepository {
      *
      * <p>Rejects a duplicate entry id rather than overwriting: silently replacing an entry would
      * make the ledger mutable by accident, which is the failure this design exists to prevent.
+     *
+     * <p>Entries are grouped by wallet. An earlier version keyed the whole batch on the first
+     * entry's wallet, so a mixed batch appended every entry into one wallet's ledger.
      */
     @Override
     public void appendLedgerEntries(List<LedgerEntry> entries) {
@@ -111,25 +128,31 @@ public class InMemoryWalletRepository implements WalletRepository {
         if (entries.isEmpty()) {
             return;
         }
-        List<LedgerEntry> ledger = ledgerStore.computeIfAbsent(
-                entries.getFirst().walletId(), k -> new CopyOnWriteArrayList<>());
-        synchronized (ledger) {
-            for (LedgerEntry entry : entries) {
-                var existing = ledger.stream()
-                        .filter(e -> e.entryId().equals(entry.entryId()))
-                        .findFirst();
-                if (existing.isPresent()) {
-                    // Re-appending an identical entry is what a retry after a serialization
-                    // failure looks like, and must be a no-op rather than an error. Re-using an
-                    // id for DIFFERENT content is a genuine conflict and is refused.
-                    if (existing.get().equals(entry)) {
-                        continue;
+        Map<String, List<LedgerEntry>> byWallet = entries.stream()
+            .collect(java.util.stream.Collectors.groupingBy(LedgerEntry::walletId,
+                java.util.LinkedHashMap::new, java.util.stream.Collectors.toList()));
+
+        for (Map.Entry<String, List<LedgerEntry>> walletBatch : byWallet.entrySet()) {
+            List<LedgerEntry> ledger = ledgerStore.computeIfAbsent(
+                walletBatch.getKey(), k -> new CopyOnWriteArrayList<>());
+            synchronized (ledger) {
+                for (LedgerEntry entry : walletBatch.getValue()) {
+                    var existing = ledger.stream()
+                            .filter(e -> e.entryId().equals(entry.entryId()))
+                            .findFirst();
+                    if (existing.isPresent()) {
+                        // Re-appending an identical entry is what a retry after a serialization
+                        // failure looks like, and must be a no-op rather than an error. Re-using an
+                        // id for DIFFERENT content is a genuine conflict and is refused.
+                        if (existing.get().equals(entry)) {
+                            continue;
+                        }
+                        throw new IllegalArgumentException(
+                                "Ledger entry id " + entry.entryId()
+                                    + " already exists with different content; the ledger is append-only");
                     }
-                    throw new IllegalArgumentException(
-                            "Ledger entry id " + entry.entryId()
-                                + " already exists with different content; the ledger is append-only");
+                    ledger.add(entry);
                 }
-                ledger.add(entry);
             }
         }
     }

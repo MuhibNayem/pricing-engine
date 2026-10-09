@@ -1,5 +1,6 @@
 package com.saas.pricing.core.engine;
 
+import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.model.Discount;
 import com.saas.pricing.core.model.DiscountStackingRule;
 import com.saas.pricing.core.model.Money;
@@ -46,12 +47,14 @@ public final class DiscountEngine {
             return new DiscountOutcome(Money.zero(grossAmount.currency()), grossAmount, List.of());
         }
 
-        // Check if any EXCLUSIVE discount is present
+        // An EXCLUSIVE discount cannot be combined with anything, so the engine selects the single
+        // best offer among ALL applicable discounts - not only among the exclusive ones. Selecting
+        // among exclusives alone would silently discard a larger non-exclusive saving.
         boolean hasExclusive = activeDiscounts.stream()
             .anyMatch(d -> d.stackingRule() == DiscountStackingRule.EXCLUSIVE);
 
         if (hasExclusive) {
-            return evaluateExclusive(grossAmount, activeDiscounts);
+            return evaluateSingleBest(grossAmount, activeDiscounts);
         }
 
         // Stacking mode evaluation
@@ -102,16 +105,36 @@ public final class DiscountEngine {
                     // Additive applies directly to original gross
                     yield originalGross.times(factor);
                 } else {
-                    // Waterfall & Compound apply to current remaining balance
+                    // Waterfall and compound both apply to the running remaining balance; they are
+                    // two historical names for the same sequential rule (see DiscountStackingRule).
                     yield currentBalance.times(factor);
                 }
             }
-            case FIXED_AMOUNT -> Money.of(discount.value(), originalGross.currency());
-            case FREE_UNITS -> Money.zero(originalGross.currency()); // Handled at item quantity level
+            case FIXED_AMOUNT -> {
+                // The discount carries the currency it was created in. Reinterpreting a USD coupon
+                // as EUR 20 because the invoice happens to be in EUR is a silent revenue error, so
+                // a mismatch is refused instead.
+                CurrencyUnit discountCurrency = discount.fixedCurrency().orElse(originalGross.currency());
+                if (!discountCurrency.equals(originalGross.currency())) {
+                    throw new IllegalArgumentException(
+                        "Discount %s is in %s but is applied to a %s amount; convert it first".formatted(
+                            discount.code(), discountCurrency.code(), originalGross.currency().code()));
+                }
+                yield Money.of(discount.value(), discountCurrency);
+            }
+            // Priced by DefaultPricingEngine from the quantity it removes; there is no monetary
+            // value on the discount itself.
+            case FREE_UNITS -> Money.zero(originalGross.currency());
         };
     }
 
-    private DiscountOutcome evaluateExclusive(Money grossAmount, List<Discount> activeDiscounts) {
+    /**
+     * Applies exactly one discount: the one that saves the customer the most.
+     *
+     * <p>Used when an EXCLUSIVE discount is present. Competitors include non-exclusive discounts,
+     * because "exclusive" means "nothing stacks with it", not "other offers are void".
+     */
+    private DiscountOutcome evaluateSingleBest(Money grossAmount, List<Discount> activeDiscounts) {
         List<TraceStep> trace = new ArrayList<>();
         Discount bestDiscount = null;
         Money maxSaving = Money.zero(grossAmount.currency());

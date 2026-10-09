@@ -62,6 +62,8 @@ public final class DunningEngine {
 
         /** The invoice was paid in full; mark it settled. */
         MARK_SETTLED,
+        /** Part of the balance was collected; the invoice remains open. */
+        PARTIAL_PAYMENT,
         /** The ladder ran out; write the invoice off. */
         WRITE_OFF,
         /** An attempt with this id was already recorded - do not charge again. */
@@ -104,7 +106,15 @@ public final class DunningEngine {
                 "Attempt " + outcome.attemptId() + " was already recorded; not charging again");
         }
 
-        int made = recorded.size();
+        // The highest attempt number on file, INCLUDING the attempt just reported. Using the list
+        // size ignored outcome.attemptNumber, so a just-failed attempt 2 that the caller had not
+        // yet added to `attempts` produced "attempt 2 is due" again - the same attempt id, a second
+        // charge for the same collection step.
+        int highestRecorded = recorded.stream()
+            .mapToInt(PaymentAttempt::attemptNumber)
+            .max()
+            .orElse(0);
+        int made = Math.max(highestRecorded, outcome == null ? 0 : outcome.attemptNumber());
 
         // A pending charge must be handled before success is even considered.
         if (outcome != null && outcome.isPending()) {
@@ -118,9 +128,15 @@ public final class DunningEngine {
 
         // Apply the attempt the caller just reported.
         if (outcome != null && outcome.isSuccessful()) {
-            Invoice settled = invoice.recordPayment(outcome.amount());
-            return new Plan(Kind.MARK_SETTLED, Optional.of(outcome), Optional.of(settled),
-                "Collected " + outcome.amount() + "; invoice settled");
+            Invoice updated = invoice.recordPayment(outcome.amount());
+            if (updated.isSettled()) {
+                return new Plan(Kind.MARK_SETTLED, Optional.of(outcome), Optional.of(updated),
+                    "Collected " + outcome.amount() + "; invoice settled");
+            }
+            // A partial payment leaves the invoice OPEN. Reporting MARK_SETTLED here would tell the
+            // caller to close an invoice that still has a balance.
+            return new Plan(Kind.PARTIAL_PAYMENT, Optional.of(outcome), Optional.of(updated),
+                "Collected " + outcome.amount() + "; " + updated.balanceDue() + " remains outstanding");
         }
 
         if (outcome != null && schedule.terminatesOnFailure(outcome.attemptNumber())) {
@@ -137,9 +153,12 @@ public final class DunningEngine {
         }
 
         int nextNumber = made + 1;
-        Instant firstAttemptAt = recorded.isEmpty()
-            ? now
-            : recorded.getFirst().attemptedAt();
+        // The ladder is anchored on when collection actually started. When the caller reports the
+        // first attempt but does not yet include it in `attempts`, its attemptedAt is the anchor;
+        // using `now` would shift the whole ladder forward on every evaluation.
+        Instant firstAttemptAt = !recorded.isEmpty()
+            ? recorded.getFirst().attemptedAt()
+            : (outcome != null ? outcome.attemptedAt() : now);
         Instant dueAt = schedule.dueAt(firstAttemptAt, nextNumber);
 
         if (dueAt.isAfter(now)) {

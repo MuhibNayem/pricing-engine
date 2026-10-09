@@ -24,7 +24,7 @@ public class InMemoryAuditSink implements AuditSink {
     public void record(PricingResult result) {
         Objects.requireNonNull(result, "PricingResult cannot be null");
         resultsById.put(result.calculationId(), result);
-        resultsByTenant.computeIfAbsent(result.tenantId().value().toUpperCase(), k -> new CopyOnWriteArrayList<>()).add(result);
+        resultsByTenant.computeIfAbsent(result.tenantId().value(), k -> new CopyOnWriteArrayList<>()).add(result);
     }
 
     public Optional<PricingResult> findById(String calculationId) {
@@ -32,7 +32,7 @@ public class InMemoryAuditSink implements AuditSink {
     }
 
     public List<PricingResult> findByTenant(TenantId tenantId) {
-        List<PricingResult> list = resultsByTenant.get(tenantId.value().toUpperCase());
+        List<PricingResult> list = resultsByTenant.get(tenantId.value());
         return list != null ? new ArrayList<>(list) : List.of();
     }
 

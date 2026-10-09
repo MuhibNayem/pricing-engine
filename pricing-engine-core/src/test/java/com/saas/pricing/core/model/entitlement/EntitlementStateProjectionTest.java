@@ -111,16 +111,24 @@ class EntitlementStateProjectionTest {
         @DisplayName("a backdated grant is ordered by effective time, not by record order")
         void backdatedGrantAppliesAtItsEffectiveDate() {
             // A grant effective in January but recorded in June must still apply to a customer who
-            // asks about January. Ordering by recordedAt alone would get this wrong.
+            // asks about January, as long as the question is asked with the system time set after
+            // the record was written. Ordering by recordedAt alone would get this wrong.
             var backdated = EntitlementEvent.grant("e2", TENANT, CUSTOMER, "BACKFILL",
                 FeatureType.BOOLEAN, Optional.empty(), JAN.plusSeconds(60), JUN, "backfill");
 
             var events = List.of(grant("e1", "ANALYTICS", JAN), backdated);
 
-            var inFebruary = EntitlementStateProjection.project(events, Instant.parse("2026-02-01T00:00:00Z"));
-            assertThat(EntitlementStateProjection.activeFeatures(inFebruary))
+            var inFebruaryAsKnownInJune = EntitlementStateProjection.project(
+                events, Instant.parse("2026-02-01T00:00:00Z"), JUN);
+            assertThat(EntitlementStateProjection.activeFeatures(inFebruaryAsKnownInJune))
                 .as("the backfilled grant applies at its effective date, before it was recorded")
                 .containsExactlyInAnyOrder("ANALYTICS", "BACKFILL");
+
+            var inFebruaryAsKnownInFebruary = EntitlementStateProjection.project(
+                events, Instant.parse("2026-02-01T00:00:00Z"), Instant.parse("2026-02-01T00:00:00Z"));
+            assertThat(EntitlementStateProjection.activeFeatures(inFebruaryAsKnownInFebruary))
+                .as("an event recorded after the projection instant did not exist yet")
+                .containsExactly("ANALYTICS");
         }
 
         @Test

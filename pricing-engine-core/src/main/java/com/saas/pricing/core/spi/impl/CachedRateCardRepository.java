@@ -24,7 +24,7 @@ public class CachedRateCardRepository implements RateCardRepository {
     }
 
     private String cacheKey(TenantId tenantId, PlanCode planCode, Instant effectiveTime) {
-        return tenantId.value().toUpperCase() + ":" + planCode.value().toUpperCase() + ":" + effectiveTime.toEpochMilli();
+        return tenantId.value() + ":" + planCode.value() + ":" + effectiveTime;
     }
 
     @Override

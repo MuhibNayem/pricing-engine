@@ -6,6 +6,7 @@ import com.saas.pricing.core.model.BillingPeriod;
 import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.model.Discount;
 import com.saas.pricing.core.model.DiscountScope;
+import com.saas.pricing.core.model.DiscountType;
 import com.saas.pricing.core.model.EvaluationTrace;
 import com.saas.pricing.core.model.Money;
 import com.saas.pricing.core.model.PricingRequest;
@@ -102,8 +103,10 @@ public final class DefaultPricingEngine implements PricingEngine {
             request.systemTime()
         );
         RateCard rateCard = resolvedHierarchy.effectiveRateCard();
-        List<Discount> effectiveDiscounts = new ArrayList<>(request.discounts());
-        effectiveDiscounts.addAll(resolvedHierarchy.customDiscounts());
+        // Contract overrides are added first so that, at equal priority, a negotiated term outranks
+        // an ad-hoc request coupon rather than the other way round.
+        List<Discount> effectiveDiscounts = new ArrayList<>(resolvedHierarchy.customDiscounts());
+        effectiveDiscounts.addAll(request.discounts());
         Optional<SpendCommitment> spendCommitment = resolvedHierarchy.spendCommitment();
 
         trace.addStep("RATE_CARD_RESOLVED", "Resolved RateCard '%s' version %d via %s (overrides=%s)".formatted(
@@ -154,17 +157,18 @@ public final class DefaultPricingEngine implements PricingEngine {
             // request is what makes FlatFeeModel.cadence() mean anything.
             verifyFlatFeeCadence(planItem, request, itemTrace);
 
-            // Apply Proration if eligible
-            if (planItem.proratable() && request.prorationWindow().isPresent()) {
-                BigDecimal factor = request.prorationWindow().get().calculateFactor();
-                grossItemAmount = grossItemAmount.times(factor);
-                itemTrace.add(TraceStep.of("PRORATION_APPLIED", "Proration factor %s applied: new gross = %s".formatted(factor, grossItemAmount)));
-            }
+            BigDecimal prorationFactor = planItem.proratable() && request.prorationWindow().isPresent()
+                ? request.prorationWindow().get().calculateFactor()
+                : null;
+            BigDecimal fxRate = planItem.baseCurrency().equals(targetCurrency)
+                ? null
+                : currencyExchangeProvider.getExchangeRate(planItem.baseCurrency(), targetCurrency, evalTime);
 
-            // FX Conversion if needed
-            if (!planItem.baseCurrency().equals(targetCurrency)) {
-                BigDecimal fxRate = currencyExchangeProvider.getExchangeRate(planItem.baseCurrency(), targetCurrency, evalTime);
-                grossItemAmount = Money.of(grossItemAmount.amount().multiply(fxRate), targetCurrency);
+            grossItemAmount = proratedAndConverted(grossItemAmount, prorationFactor, fxRate, targetCurrency);
+            if (prorationFactor != null) {
+                itemTrace.add(TraceStep.of("PRORATION_APPLIED", "Proration factor %s applied: new gross = %s".formatted(prorationFactor, grossItemAmount)));
+            }
+            if (fxRate != null) {
                 itemTrace.add(TraceStep.of("FX_CONVERSION", "Converted from %s to %s at rate %s: %s".formatted(
                     planItem.baseCurrency().code(), targetCurrency.code(), fxRate, grossItemAmount
                 )));
@@ -176,9 +180,44 @@ public final class DefaultPricingEngine implements PricingEngine {
                 .filter(d -> d.targetItemCode().map(code -> code.equalsIgnoreCase(itemReq.itemCode())).orElse(false))
                 .toList();
 
-            var discountOutcome = discountEngine.applyDiscounts(grossItemAmount, itemDiscounts, evalTime);
-            Money lineDiscount = discountOutcome.totalDiscount();
-            Money lineNet = discountOutcome.netAmount();
+            if (grossItemAmount.isNegative()) {
+                // A model (typically a dynamic formula) produced a credit. Letting it through would
+                // later fail the remainder allocator or silently reduce the invoice.
+                throw new IllegalArgumentException(
+                    "Item '%s' rated to a negative amount %s; a rating cannot produce a negative charge"
+                        .formatted(itemReq.itemCode(), grossItemAmount));
+            }
+
+            // FREE_UNITS removes quantity, not money: it is priced by re-evaluating the model for
+            // the reduced quantity, so a tiered or formula model gives the same answer it would if
+            // the customer had simply used fewer units.
+            BigDecimal freeUnits = itemDiscounts.stream()
+                .filter(d -> d.type() == DiscountType.FREE_UNITS)
+                .map(Discount::value)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            Money freeUnitDiscount = Money.zero(targetCurrency);
+            if (freeUnits.signum() > 0 && billableQty.signum() > 0) {
+                BigDecimal chargeableQty = billableQty.subtract(freeUnits).max(BigDecimal.ZERO);
+                var chargeableOutcome = modelEvaluator.evaluate(
+                    planItem.pricingModel(), chargeableQty, planItem.baseCurrency(), combinedAttrs, formulaEvaluator);
+                Money chargeableGross = proratedAndConverted(
+                    chargeableOutcome.grossAmount(), prorationFactor, fxRate, targetCurrency);
+                freeUnitDiscount = grossItemAmount.minus(chargeableGross)
+                    .max(Money.zero(targetCurrency))
+                    .min(grossItemAmount);
+                itemTrace.add(TraceStep.of("FREE_UNITS_APPLIED",
+                    "Applied %s free units: charged for %s of %s, saving %s".formatted(
+                        freeUnits.stripTrailingZeros().toPlainString(), chargeableQty, billableQty, freeUnitDiscount)));
+            }
+
+            List<Discount> monetaryDiscounts = itemDiscounts.stream()
+                .filter(d -> d.type() != DiscountType.FREE_UNITS)
+                .toList();
+            var discountOutcome = discountEngine.applyDiscounts(grossItemAmount, monetaryDiscounts, evalTime);
+            // Net is derived from gross minus the total discount (including free units) so the
+            // three figures always agree, rather than being taken from two separate code paths.
+            Money lineDiscount = discountOutcome.totalDiscount().plus(freeUnitDiscount).roundToCurrency();
+            Money lineNet = grossItemAmount.minus(lineDiscount).roundToCurrency();
             itemTrace.addAll(discountOutcome.traceSteps());
 
             // Calculate item-level taxes on the net of line-level discounts
@@ -219,8 +258,14 @@ public final class DefaultPricingEngine implements PricingEngine {
             .toList();
 
         var invoiceDiscountOutcome = discountEngine.applyDiscounts(netAccumulator, invoiceDiscounts, evalTime);
-        Money totalInvoiceDiscount = invoiceDiscountOutcome.totalDiscount();
-        Money netAfterAllDiscounts = invoiceDiscountOutcome.netAmount();
+        // Discounts are money: a percentage of an amount can land on a fractional cent, and that
+        // fraction cannot be apportioned across lines (RemainderAllocator refuses to round silently).
+        // Rounding the aggregate to the currency's minor unit first is the only conserving choice;
+        // clamping to the balance keeps a rounded-up discount from driving net negative.
+        Money totalInvoiceDiscount = invoiceDiscountOutcome.totalDiscount()
+            .roundToCurrency()
+            .min(netAccumulator);
+        Money netAfterAllDiscounts = netAccumulator.minus(totalInvoiceDiscount);
 
         for (TraceStep s : invoiceDiscountOutcome.traceSteps()) {
             trace.addStep(s);
@@ -278,6 +323,18 @@ public final class DefaultPricingEngine implements PricingEngine {
         // 3. Minimum Spend Commitment Evaluation & True-up
         if (spendCommitment.isPresent() && spendCommitment.get().isEffectiveAt(evalTime)) {
             SpendCommitment commitment = spendCommitment.get();
+            // The minimum is per commitment period. Applying an annual minimum to a monthly invoice
+            // compares incomparable figures: a $1,000/month minimum on a $5,000 annual invoice would
+            // demand no true-up at all ($5,000 > $1,000), when the year actually needs $12,000.
+            // The same rule as flat-fee cadence: once the request declares its period, a mismatch is
+            // an error rather than a silent undercharge.
+            if (request.billingCadence().isPresent()
+                && commitment.cadence() != request.billingCadence().get()) {
+                throw new IllegalArgumentException(
+                    "Spend commitment '%s' is a %s minimum but the request is charging a %s period; "
+                        .formatted(commitment.commitmentId(), commitment.cadence(), request.billingCadence().get())
+                        + "declare the matching cadence so the minimum is compared against the period it covers");
+            }
             Money trueUp = commitment.calculateTrueUp(netAfterAllDiscounts);
             if (trueUp.isPositive()) {
                 trace.addStep("COMMITMENT_SHORTFALL",
@@ -359,6 +416,25 @@ public final class DefaultPricingEngine implements PricingEngine {
                     + "A flat fee covers exactly one period; declare the matching cadence or use a model "
                     + "that scales with period length.");
         }
+    }
+
+    /**
+     * Applies the proration factor and FX rate to an amount, in that order.
+     *
+     * <p>Extracted so the full-quantity and free-units-reduced evaluations go through exactly the
+     * same adjustments; computing only one of them would leave the free-unit saving in the model's
+     * base currency on a converted invoice.
+     */
+    private static Money proratedAndConverted(Money amount, BigDecimal prorationFactor,
+                                              BigDecimal fxRate, CurrencyUnit targetCurrency) {
+        Money result = amount;
+        if (prorationFactor != null) {
+            result = result.times(prorationFactor);
+        }
+        if (fxRate != null) {
+            result = Money.of(result.amount().multiply(fxRate), targetCurrency);
+        }
+        return result;
     }
 
     /**

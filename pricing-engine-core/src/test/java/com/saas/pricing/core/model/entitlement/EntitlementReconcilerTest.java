@@ -123,18 +123,19 @@ class EntitlementReconcilerTest {
         }
 
         @Test
-        @DisplayName("disagreeing usage counters are flagged without touching access")
-        void usageMismatch() {
+        @DisplayName("usage is not derived from the event stream, so it is not flagged as drift")
+        void usageIsNotDerivedFromTheEventStream() {
             var events = List.of(EntitlementEvent.grant("e1", TENANT, CUSTOMER, "API",
                 FeatureType.METERED_STATIC, java.util.Optional.of(new BigDecimal("1000")), JAN, JAN, "contract"));
 
             var report = EntitlementReconciler.reconcile(TENANT, CUSTOMER, NOW, events,
                 Map.of("API", storedWithUsage("API", new BigDecimal("42"))));
 
-            assertThat(report.drifted()).singleElement().satisfies(drift -> {
-                assertThat(drift.drift()).isEqualTo(EntitlementReconciler.DriftType.USAGE_MISMATCH);
-                assertThat(drift.remediation()).isEqualTo(EntitlementReconciler.Remediation.REPLAY_USAGE);
-            });
+            // The stream carries grants and revocations, never consumption, so a derived usage of
+            // zero is not a fact to compare against. Reporting USAGE_MISMATCH here sent operators
+            // chasing every consumed quota; the stored figure is still carried on the comparison
+            // for the caller to audit.
+            assertThat(report.drifted()).isEmpty();
             assertThat(report.wronglyDenied()).isEmpty();
             assertThat(report.wronglyGranted()).isEmpty();
         }

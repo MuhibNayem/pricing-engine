@@ -30,8 +30,8 @@ public class InMemoryEntitlementEventRepository implements EntitlementEventRepos
     private final Map<String, List<EntitlementEvent>> events = new ConcurrentHashMap<>();
 
     private static String key(TenantId tenantId, CustomerId customerId, String featureKey) {
-        return tenantId.value().toUpperCase(java.util.Locale.ROOT) + "::"
-            + customerId.value().toUpperCase(java.util.Locale.ROOT) + "::" + featureKey;
+        return tenantId.value() + "::"
+            + customerId.value() + "::" + featureKey;
     }
 
     /**
@@ -84,8 +84,8 @@ public class InMemoryEntitlementEventRepository implements EntitlementEventRepos
     @Override
     public List<EntitlementEvent> findAllEvents(TenantId tenantId, CustomerId customerId,
                                                 Optional<Instant> effectiveBefore) {
-        String prefix = tenantId.value().toUpperCase(java.util.Locale.ROOT) + "::"
-            + customerId.value().toUpperCase(java.util.Locale.ROOT) + "::";
+        String prefix = tenantId.value() + "::"
+            + customerId.value() + "::";
         List<EntitlementEvent> all = new ArrayList<>();
         events.forEach((k, v) -> {
             if (k.startsWith(prefix)) {

@@ -94,6 +94,10 @@ public final class ProrationCalculator {
                 "Both plan prices must be expressed in " + currency.code()
                     + "; a proration across currencies needs a stored rate, which belongs in FxBooking");
         }
+        if (oldPrice.isNegative() || newPrice.isNegative()) {
+            throw new IllegalArgumentException(
+                "Plan prices cannot be negative; a negative price is a credit, not a plan");
+        }
 
         // The covered span is [max(effectiveAt, periodStart), periodEnd) - the part of the period that
         // the NEW price applies to. Clamping the end to effectiveAt instead would collapse the
@@ -102,7 +106,15 @@ public final class ProrationCalculator {
             // A change effective at or after the period end is simply not this period's business.
             return List.of();
         }
-        Instant clampedStart = effectiveAt.isBefore(periodStart) ? periodStart : effectiveAt;
+        if (!effectiveAt.isAfter(periodStart)) {
+            // The change is effective from (or before) the start of the period: the old plan was
+            // never in force during it, so crediting a full period of old-plan price is a refund for
+            // a charge this period never carried. The period is simply billed at the new price.
+            Money debit = newPrice.roundToCurrency();
+            return List.of(new ProrationAdjustment(ProrationAdjustment.Kind.DEBIT, itemCode, newPlanCode,
+                debit, BigDecimal.ONE, periodStart, periodEnd, periodStart, periodEnd, false, reason));
+        }
+        Instant clampedStart = effectiveAt;
         Instant clampedEnd = periodEnd;
 
         BigDecimal periodSeconds = BigDecimal.valueOf(

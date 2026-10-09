@@ -51,8 +51,11 @@ class ProrationReasonTest {
             .as("unused trial time is refunded as a proration")
             .isTrue();
         assertThat(ProrationReason.TRIAL_ENDED.producesDebit())
-            .as("the next complete period is a plain charge, not a proration")
-            .isFalse();
+            .as("the next complete period is a plain charge that accompanies the credit")
+            .isTrue();
+        assertThat(ProrationReason.TRIAL_ENDED.producesBoth())
+            .as("the calculator must be able to emit both sides for a trial end")
+            .isTrue();
     }
 
     @Test
@@ -60,7 +63,9 @@ class ProrationReasonTest {
     void operationsDeclareTheirSides() {
         assertThat(ProrationReason.PLAN_CHANGED.producesBoth()).isTrue();
         assertThat(ProrationReason.CANCELLED_EARLY.producesCredit()).isTrue();
-        assertThat(ProrationReason.RESUMED.producesBoth()).isTrue();
+        assertThat(ProrationReason.CANCELLED_EARLY.producesDebit()).isFalse();
+        assertThat(ProrationReason.RESUMED.producesDebit()).isTrue();
+        assertThat(ProrationReason.RESUMED.producesCredit()).isFalse();
         assertThat(ProrationReason.MANUAL_ADJUSTMENT.producesBoth()).isTrue();
     }
 

@@ -32,6 +32,20 @@ public final class EntitlementStateProjection {
     /** Every entitlement a customer holds at {@code at}, keyed by feature. */
     public static Map<String, EntitlementEvent.EntitlementState> project(
         List<EntitlementEvent> events, java.time.Instant at) {
+        return project(events, at, at);
+    }
+
+    /**
+     * Every entitlement a customer holds, as known at {@code systemTime} and effective at
+     * {@code effectiveAt}.
+     *
+     * <p>The two times are separate because they answer different questions: valid time decides
+     * whether a change applies to the period being viewed, system time decides whether the change
+     * had even been recorded yet. An event effective in the period but recorded after the projection
+     * instant did not exist at that instant and must not be applied.
+     */
+    public static Map<String, EntitlementEvent.EntitlementState> project(
+        List<EntitlementEvent> events, java.time.Instant effectiveAt, java.time.Instant systemTime) {
 
         List<EntitlementEvent> ordered = new ArrayList<>(events);
         ordered.sort(Comparator
@@ -41,13 +55,17 @@ public final class EntitlementStateProjection {
 
         Map<String, EntitlementEvent.EntitlementState> state = new LinkedHashMap<>();
         for (EntitlementEvent event : ordered) {
-            if (event.effectiveAt().isAfter(at)) {
+            if (event.effectiveAt().isAfter(effectiveAt)) {
                 break;
+            }
+            if (event.recordedAt().isAfter(systemTime)) {
+                // Recorded after the instant being viewed; it cannot have influenced the state.
+                continue;
             }
             switch (event.type()) {
                 case GRANTED -> state.put(event.featureKey(),
                     new EntitlementEvent.EntitlementState(true, event.featureType(),
-                        event.quotaLimit(), Optional.of(BigDecimal.ZERO), event.effectiveAt()));
+                        event.quotaLimit(), Optional.empty(), event.effectiveAt()));
                 case QUOTA_CHANGED -> state.computeIfPresent(event.featureKey(),
                     (key, previous) -> new EntitlementEvent.EntitlementState(
                         previous.active(), event.featureType(), event.quotaLimit(),

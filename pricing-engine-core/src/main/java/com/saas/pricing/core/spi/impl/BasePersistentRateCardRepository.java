@@ -36,7 +36,7 @@ public abstract class BasePersistentRateCardRepository implements RateCardReposi
         List<RateCard> candidates = loadRawCards(tenantId, planCode);
         return candidates.stream()
             .filter(rc -> rc.isEffectiveAt(effectiveTime))
-            .max(Comparator.comparingInt(RateCard::version));
+            .max(versionOrder());
     }
 
     @Override
@@ -49,7 +49,19 @@ public abstract class BasePersistentRateCardRepository implements RateCardReposi
         List<RateCard> candidates = loadRawCards(tenantId, planCode);
         return candidates.stream()
             .filter(rc -> rc.isBiTemporallyValidAt(effectiveTime, systemTime))
-            .max(Comparator.comparingInt(RateCard::version));
+            .max(versionOrder());
+    }
+
+    /**
+     * Newest version wins; ties are broken deterministically by system time and then id.
+     *
+     * <p>A bare version comparison returns whichever equal-version card the storage happened to
+     * iterate first, so the same query could price differently between runs.
+     */
+    protected static Comparator<RateCard> versionOrder() {
+        return Comparator.comparingInt(RateCard::version)
+            .thenComparing(RateCard::recordedAt)
+            .thenComparing(RateCard::rateCardId);
     }
 
     @Override
@@ -60,19 +72,31 @@ public abstract class BasePersistentRateCardRepository implements RateCardReposi
     }
 
     /**
-     * Enforces that newly submitted rate cards have strictly ascending versions
-     * to prevent silent overwrites or state corruption.
+     * Enforces the versioning contract: versions ascend within a tenant+plan, and an existing
+     * version can only be touched by the supersede transition of the same card.
+     *
+     * <p>The previous check only rejected an exact (version, id) collision when neither card had a
+     * supersede timestamp, so a second card could reuse a version under a different id and an
+     * already-superseded card could be overwritten - both leave the effective lookup choosing
+     * between ambiguous rows.
      */
     protected void validateNewVersion(RateCard newCard) {
         List<RateCard> existing = loadRawCards(newCard.tenantId(), newCard.planCode());
         for (RateCard card : existing) {
-            if (card.version() == newCard.version() && card.rateCardId().equals(newCard.rateCardId())) {
-                // If it's superseded, it's an update
-                if (newCard.supersededAt().isEmpty() && card.supersededAt().isEmpty()) {
+            if (card.version() > newCard.version()) {
+                throw new IllegalStateException(
+                    ("Rate card version %d cannot be stored for plan '%s' after version %d exists; "
+                        + "versions must ascend so history cannot be rewritten")
+                        .formatted(newCard.version(), newCard.planCode().value(), card.version()));
+            }
+            if (card.version() == newCard.version()) {
+                boolean supersedeTransition = card.rateCardId().equals(newCard.rateCardId())
+                    && newCard.supersededAt().isPresent();
+                if (!supersedeTransition) {
                     throw new IllegalStateException(
-                        "Rate card version %d already exists for plan '%s' and is immutable"
-                            .formatted(newCard.version(), newCard.planCode().value())
-                    );
+                        ("Rate card version %d already exists for plan '%s' (card '%s'); a version is "
+                            + "immutable and may only receive a supersede timestamp")
+                            .formatted(newCard.version(), newCard.planCode().value(), card.rateCardId()));
                 }
             }
         }

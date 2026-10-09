@@ -26,7 +26,7 @@ public class InMemorySubscriptionRepository implements SubscriptionRepository {
     private final Map<String, Subscription> subscriptions = new ConcurrentHashMap<>();
 
     private static String key(TenantId tenantId, String subscriptionId) {
-        return tenantId.value().toUpperCase(java.util.Locale.ROOT) + "::" + subscriptionId;
+        return tenantId.value() + "::" + subscriptionId;
     }
 
     @Override

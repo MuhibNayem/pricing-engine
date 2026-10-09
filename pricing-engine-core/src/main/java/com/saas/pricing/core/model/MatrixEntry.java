@@ -83,7 +83,10 @@ public record MatrixEntry(
                 score += 10;
             }
         }
-        return score + (priority * 100);
+        // Long arithmetic then saturation: `priority * 100` overflows int for priorities above
+        // ~21 million and can invert the comparison, making the least specific entry win.
+        long weighted = (long) score + (long) priority * 100L;
+        return (int) Math.max(Integer.MIN_VALUE, Math.min(Integer.MAX_VALUE, weighted));
     }
 
     private static boolean matchesNumericRange(String rangeStr, String valueStr) {

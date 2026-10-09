@@ -21,11 +21,11 @@ public class InMemoryEntitlementRepository implements EntitlementRepository {
     private final Map<String, CustomerEntitlement> store = new ConcurrentHashMap<>();
 
     private String key(TenantId tenantId, CustomerId customerId, String featureKey) {
-        return tenantId.value().toUpperCase() + "::" + customerId.value().toUpperCase() + "::" + featureKey.toUpperCase();
+        return tenantId.value() + "::" + customerId.value() + "::" + featureKey;
     }
 
     private String prefix(TenantId tenantId, CustomerId customerId) {
-        return tenantId.value().toUpperCase() + "::" + customerId.value().toUpperCase() + "::";
+        return tenantId.value() + "::" + customerId.value() + "::";
     }
 
     @Override

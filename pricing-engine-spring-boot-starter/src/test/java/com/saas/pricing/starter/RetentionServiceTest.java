@@ -74,10 +74,11 @@ class RetentionServiceTest {
             .containsExactly(RetentionClass.RecordClass.DIAGNOSTIC.name());
 
         assertThat(actions.anonymised)
-            .as("usage telemetry is still inside its retention window, so nothing is touched")
-            .isEmpty();
+            .as("the ledger is past its anonymisation point: personal data is stripped while the "
+                + "financial record is kept")
+            .containsExactly(RetentionClass.RecordClass.FINANCIAL_LEDGER.name());
 
-        assertThat(report.retained()).contains(RetentionClass.RecordClass.FINANCIAL_LEDGER);
+        assertThat(report.anonymised()).contains(RetentionClass.RecordClass.FINANCIAL_LEDGER);
         assertThat(report.erased()).containsExactly(RetentionClass.RecordClass.DIAGNOSTIC);
     }
 

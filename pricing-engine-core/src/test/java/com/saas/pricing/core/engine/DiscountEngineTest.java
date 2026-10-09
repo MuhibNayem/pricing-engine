@@ -93,4 +93,47 @@ class DiscountEngineTest {
         assertThat(outcome.totalDiscount().amount()).isEqualByComparingTo("50.00");
         assertThat(outcome.netAmount().amount()).isEqualByComparingTo("150.00");
     }
+
+    @Test
+    @DisplayName("an exclusive discount competes with every other discount, not just exclusives")
+    void exclusiveChoosesAmongAllDiscounts() {
+        Money gross = Money.of("100.00", CurrencyUnit.USD);
+
+        // The exclusive offer is worth $15; a plain waterfall offer is worth $40. "Exclusive" means
+        // nothing stacks with the chosen offer, not that the larger non-exclusive offer disappears.
+        var exclusive = new Discount("EXCL_15", DiscountType.FIXED_AMOUNT, BigDecimal.valueOf(15),
+            DiscountScope.INVOICE_TOTAL, Optional.empty(), DiscountStackingRule.EXCLUSIVE, 1,
+            Optional.empty(), Optional.empty());
+        var plain = new Discount("BIG_40", DiscountType.FIXED_AMOUNT, BigDecimal.valueOf(40),
+            DiscountScope.INVOICE_TOTAL, Optional.empty(), DiscountStackingRule.WATERFALL, 2,
+            Optional.empty(), Optional.empty());
+
+        var outcome = discountEngine.applyDiscounts(gross, List.of(exclusive, plain), now);
+
+        assertThat(outcome.totalDiscount().amount()).isEqualByComparingTo("40.00");
+        assertThat(outcome.netAmount().amount()).isEqualByComparingTo("60.00");
+    }
+
+    @Test
+    @DisplayName("a fixed-amount discount in another currency is refused, not reinterpreted")
+    void fixedAmountDiscountCurrencyMismatchRefused() {
+        Money gross = Money.of("100.00", CurrencyUnit.EUR);
+        var usdCoupon = Discount.fixedAmount("USD_20", Money.of("20.00", CurrencyUnit.USD));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                discountEngine.applyDiscounts(gross, List.of(usdCoupon), now))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("USD")
+            .hasMessageContaining("EUR");
+    }
+
+    @Test
+    @DisplayName("a FREE_UNITS discount on an invoice total is refused at construction")
+    void freeUnitsCannotApplyToAnInvoiceTotal() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                new Discount("FREE", DiscountType.FREE_UNITS, BigDecimal.TEN, DiscountScope.INVOICE_TOTAL,
+                    Optional.empty(), DiscountStackingRule.WATERFALL, 1, Optional.empty(), Optional.empty()))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("line item");
+    }
 }

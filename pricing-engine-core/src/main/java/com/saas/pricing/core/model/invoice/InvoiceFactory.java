@@ -57,13 +57,17 @@ public final class InvoiceFactory {
             periodStart, periodEnd, createdAt);
 
         for (var line : result.lineItems()) {
-            builder.addLine(InvoiceLineItem.of(
+            // The line amount is the NET the customer owes, not the gross before discounts. Billing
+            // the gross silently dropped every discount from the generated document: the invoice
+            // said the customer owed more than the rating result they were quoted.
+            builder.addLine(new InvoiceLineItem(
                 line.itemCode(),
                 describe(line.itemCode()),
                 line.billableQuantity(),
                 unitPriceFor(line, currency),
-                taxCode == null ? "" : taxCode)
-                .withMetadata(Map.of("calculationId", result.calculationId())));
+                line.netAmount().roundToCurrency(),
+                taxCode == null ? "" : taxCode,
+                Map.of("calculationId", result.calculationId())));
         }
 
         // Tax comes from the rating result verbatim. It was already apportioned across lines, and
@@ -75,19 +79,20 @@ public final class InvoiceFactory {
     }
 
     /**
-     * Derives a unit price from a rated line so that {@code quantity x unitPrice == amount}.
+     * Derives a unit price from a rated line's net amount so that {@code quantity x unitPrice} is
+     * as close to the net as the currency allows.
      *
-     * <p>The line amount is authoritative - it is what the customer owes. Dividing it back by the
-     * quantity would lose precision for non-exact divisions, so for a zero quantity the line is
-     * carried at its amount with a unit price of zero rather than being dropped: a zero-quantity
-     * line can still carry a fixed fee.
+     * <p>The line amount itself is carried verbatim (not re-derived from the unit price) because the
+     * net is authoritative - it is what the customer was quoted. A non-exact division rounded back
+     * up must not change what is owed. For a zero quantity the line is carried at its amount with a
+     * unit price of zero rather than being dropped: a zero-quantity line can still carry a fixed fee.
      */
     private static Money unitPriceFor(com.saas.pricing.core.model.RatedLineItem line, CurrencyUnit currency) {
         BigDecimal quantity = line.billableQuantity();
         if (quantity == null || quantity.signum() == 0) {
             return Money.zero(currency);
         }
-        BigDecimal unitPrice = line.grossAmount().amount()
+        BigDecimal unitPrice = line.netAmount().amount()
             .divide(quantity, currency.defaultFractionDigits() + 4, java.math.RoundingMode.HALF_EVEN)
             .stripTrailingZeros();
         return Money.of(unitPrice, currency);

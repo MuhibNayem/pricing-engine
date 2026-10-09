@@ -23,7 +23,7 @@ public class InMemoryContractOverrideRepository implements ContractOverrideRepos
     private final Map<String, List<ContractOverride>> store = new ConcurrentHashMap<>();
 
     private String key(TenantId tenantId, CustomerId customerId, PlanCode planCode) {
-        return tenantId.value().toUpperCase() + "::" + customerId.value().toUpperCase() + "::" + planCode.value().toUpperCase();
+        return tenantId.value() + "::" + customerId.value() + "::" + planCode.value();
     }
 
     @Override

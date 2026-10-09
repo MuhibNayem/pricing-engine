@@ -378,4 +378,26 @@ class PaymentMethodAndSettlementTest {
                 .hasMessageContaining("settledAt");
         }
     }
+
+    @Nested
+    @DisplayName("Collection service guards")
+    class CollectionServiceGuards {
+
+        @Test
+        @DisplayName("a method that belongs to another customer cannot be charged")
+        void methodCustomerMustMatchInvoice() {
+            var ledger = new InMemoryCollectionRepository();
+            var service = service(PaymentProcessor.Outcome.settled("ch_1", T0), ledger);
+            var foreignMethod = PaymentMethod.of("pm-foreign", TENANT, CustomerId.of("someone-else"),
+                PaymentMethodType.CARD, "proc_999", T0);
+
+            assertThatThrownBy(() -> service.collect(openInvoice("100.00", CurrencyUnit.USD),
+                foreignMethod, T0, DunningSchedule.standard()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("belongs to customer");
+            assertThat(ledger.findAttempts(TENANT, "inv-1"))
+                .as("a refused charge must leave no trace in the collection ledger")
+                .isEmpty();
+        }
+    }
 }

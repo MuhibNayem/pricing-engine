@@ -24,7 +24,7 @@ public class InMemoryCollectionRepository implements CollectionRepository {
     private final Map<String, List<PaymentAttempt>> attempts = new ConcurrentHashMap<>();
 
     private static String key(TenantId tenantId, String invoiceId) {
-        return tenantId.value().toUpperCase(java.util.Locale.ROOT) + "::" + invoiceId;
+        return tenantId.value() + "::" + invoiceId;
     }
 
     @Override

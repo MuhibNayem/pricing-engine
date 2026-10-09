@@ -266,5 +266,113 @@ class DefaultPricingEngineTest {
             .isInstanceOf(java.util.NoSuchElementException.class)
             .hasMessageContaining("No active RateCard found");
     }
+
+    // ------------------------------------------------------------------
+    // Discount / quantity regressions
+    // ------------------------------------------------------------------
+
+    private static DefaultPricingEngine engineFor(RateCard rateCard) {
+        RateCardRepository repo = new RateCardRepository() {
+            @Override
+            public Optional<RateCard> findEffectiveRateCard(TenantId tenantId, PlanCode planCode, Instant effectiveTime) {
+                return Optional.of(rateCard);
+            }
+
+            @Override
+            public void save(RateCard rc) {
+            }
+        };
+        return new DefaultPricingEngine(repo, (from, to, timestamp) -> BigDecimal.ONE,
+            TaxProvider.noOp(), AuditSink.noOp(), null);
+    }
+
+    private static RateCard cardOf(RatePlanItem... items) {
+        return RateCard.of("rc-phase2", TenantId.of("tenant_phase2"), PlanCode.of("PHASE2"), 1,
+            Instant.parse("2026-01-01T00:00:00Z"), List.of(items));
+    }
+
+    @Test
+    @DisplayName("an invoice percentage discount with a fractional cent is rounded and conserved")
+    void percentageInvoiceDiscountWithFractionalCent() {
+        // 15% of 49.99 is 7.4985: a sub-cent value. The allocator refuses to round silently, and an
+        // unrounded total used to reach it and crash every such evaluation.
+        var seats = RatePlanItem.of("SEATS", "seats",
+            PricingModel.PerUnitModel.of(new BigDecimal("49.99")), CurrencyUnit.USD);
+        var engine = engineFor(cardOf(seats));
+
+        var result = engine.evaluate(PricingRequest.builder()
+            .tenantId("tenant_phase2")
+            .planCode("PHASE2")
+            .targetCurrency(CurrencyUnit.USD)
+            .item("SEATS", 1)
+            .discount(Discount.percentage("PROMO_15", new BigDecimal("15")))
+            .build());
+
+        assertThat(result.totalGross().amount()).isEqualByComparingTo("49.99");
+        assertThat(result.totalDiscount().amount()).isEqualByComparingTo("7.50");
+        assertThat(result.totalNet().amount()).isEqualByComparingTo("42.49");
+        assertThat(result.finalTotal().amount()).isEqualByComparingTo("42.49");
+        assertThat(result.totalNet().plus(result.totalTax()).amount())
+            .as("net + tax must equal the final total after rounding")
+            .isEqualByComparingTo(result.finalTotal().amount());
+    }
+
+    @Test
+    @DisplayName("free units reduce the charged quantity before the model rates it")
+    void freeUnitsReduceBillableQuantity() {
+        // 100 API calls at $0.10 with 25 free units: the customer is billed for 75.
+        var api = RatePlanItem.of("API_CALLS", "api_calls",
+            PricingModel.PerUnitModel.of(new BigDecimal("0.10")), CurrencyUnit.USD);
+        var engine = engineFor(cardOf(api));
+
+        var result = engine.evaluate(PricingRequest.builder()
+            .tenantId("tenant_phase2")
+            .planCode("PHASE2")
+            .targetCurrency(CurrencyUnit.USD)
+            .item("API_CALLS", 100)
+            .discount(Discount.freeUnitsItem("FREE_25", new BigDecimal("25"), "API_CALLS"))
+            .build());
+
+        assertThat(result.totalGross().amount()).isEqualByComparingTo("10.00");
+        assertThat(result.totalDiscount().amount()).isEqualByComparingTo("2.50");
+        assertThat(result.totalNet().amount()).isEqualByComparingTo("7.50");
+    }
+
+    @Test
+    @DisplayName("free units work through a tiered model, not just a flat rate")
+    void freeUnitsPriceThroughTheTieredModel() {
+        // 100 units at $1 then $0.50; 50 free units must be priced at the tiered rate, not flat.
+        var tiered = RatePlanItem.of("UNITS", "units", PricingModel.GraduatedTierModel.of(
+            Tier.of(BigDecimal.ZERO, BigDecimal.valueOf(100), BigDecimal.ONE),
+            Tier.unbounded(BigDecimal.valueOf(100), new BigDecimal("0.50"))), CurrencyUnit.USD);
+        var engine = engineFor(cardOf(tiered));
+
+        var result = engine.evaluate(PricingRequest.builder()
+            .tenantId("tenant_phase2")
+            .planCode("PHASE2")
+            .targetCurrency(CurrencyUnit.USD)
+            .item("UNITS", 150)
+            .discount(Discount.freeUnitsItem("FREE_50", BigDecimal.valueOf(50), "UNITS"))
+            .build());
+
+        // Full price: 100 * 1.00 + 50 * 0.50 = 125.00; charged for 100 = 100.00.
+        assertThat(result.totalGross().amount()).isEqualByComparingTo("125.00");
+        assertThat(result.totalDiscount().amount()).isEqualByComparingTo("25.00");
+        assertThat(result.totalNet().amount()).isEqualByComparingTo("100.00");
+    }
+
+    @Test
+    @DisplayName("declaring an allowance on both the item and a hybrid model is refused")
+    void dualAllowanceDeclarationRefused() {
+        var hybrid = PricingModel.HybridModel.of(
+            Money.of("100.00", CurrencyUnit.USD),
+            new BigDecimal("5"),
+            PricingModel.PerUnitModel.of(new BigDecimal("10.00")));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+            RatePlanItem.of("SEATS", "seats", hybrid, CurrencyUnit.USD, new BigDecimal("5")))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("declare the allowance in the hybrid model only");
+    }
 }
 

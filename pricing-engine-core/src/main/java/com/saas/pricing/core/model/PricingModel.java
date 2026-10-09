@@ -25,6 +25,36 @@ public sealed interface PricingModel extends Serializable permits
 
     PricingModelType type();
 
+    /**
+     * Rejects a tier/step list that is not a partition of the number line from zero upwards.
+     *
+     * <p>A gap silently prices nothing for the units that fall in it; an overlap double-bills them
+     * or makes the bracket reached depend on iteration order. Only the last bracket may be open.
+     */
+    private static void requireContiguous(List<BigDecimal> lowerBounds,
+                                          List<Optional<BigDecimal>> upperBounds,
+                                          String kind) {
+        if (lowerBounds.getFirst().compareTo(BigDecimal.ZERO) != 0) {
+            throw new IllegalArgumentException(
+                kind + " list must start at 0, but starts at " + lowerBounds.getFirst()
+                    + "; units below it would be unpriced");
+        }
+        for (int i = 1; i < lowerBounds.size(); i++) {
+            BigDecimal previousUpper = upperBounds.get(i - 1).orElse(null);
+            if (previousUpper == null) {
+                throw new IllegalArgumentException(
+                    kind + " " + (i - 1) + " is unbounded but is not the last " + kind);
+            }
+            int comparison = lowerBounds.get(i).compareTo(previousUpper);
+            if (comparison != 0) {
+                throw new IllegalArgumentException(
+                    kind + " lists must be contiguous: " + kind + " " + i + " starts at "
+                        + lowerBounds.get(i) + " but the previous ends at " + previousUpper
+                        + (comparison < 0 ? " (overlap)" : " (gap)"));
+            }
+        }
+    }
+
     enum PricingModelType {
         FLAT_FEE,
         PER_UNIT,
@@ -44,6 +74,9 @@ public sealed interface PricingModel extends Serializable permits
         public FlatFeeModel {
             Objects.requireNonNull(amount, "Flat fee amount cannot be null");
             Objects.requireNonNull(cadence, "Cadence cannot be null");
+            if (amount.isNegative()) {
+                throw new IllegalArgumentException("Flat fee amount cannot be negative: " + amount);
+            }
         }
 
         @Override
@@ -66,6 +99,11 @@ public sealed interface PricingModel extends Serializable permits
             if (unitPrice.compareTo(BigDecimal.ZERO) < 0) {
                 throw new IllegalArgumentException("unitPrice cannot be negative");
             }
+            minimumUnits.ifPresent(minimum -> {
+                if (minimum.compareTo(BigDecimal.ZERO) < 0) {
+                    throw new IllegalArgumentException("minimumUnits cannot be negative: " + minimum);
+                }
+            });
         }
 
         @Override
@@ -93,6 +131,8 @@ public sealed interface PricingModel extends Serializable permits
                 throw new IllegalArgumentException("GraduatedTierModel must contain at least one tier");
             }
             tiers = List.copyOf(tiers);
+            requireContiguous(tiers.stream().map(Tier::lowerBound).toList(),
+                tiers.stream().map(Tier::upperBound).toList(), "tier");
         }
 
         @Override
@@ -120,6 +160,8 @@ public sealed interface PricingModel extends Serializable permits
                 throw new IllegalArgumentException("VolumeTierModel must contain at least one tier");
             }
             tiers = List.copyOf(tiers);
+            requireContiguous(tiers.stream().map(Tier::lowerBound).toList(),
+                tiers.stream().map(Tier::upperBound).toList(), "tier");
         }
 
         @Override
@@ -147,6 +189,8 @@ public sealed interface PricingModel extends Serializable permits
                 throw new IllegalArgumentException("StairStepModel must contain at least one step");
             }
             steps = List.copyOf(steps);
+            requireContiguous(steps.stream().map(StairStep::lowerBound).toList(),
+                steps.stream().map(StairStep::upperBound).toList(), "step");
         }
 
         @Override

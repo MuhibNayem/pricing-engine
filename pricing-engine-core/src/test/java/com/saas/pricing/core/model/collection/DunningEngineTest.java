@@ -219,4 +219,53 @@ class DunningEngineTest {
             assertThat(plan.reason()).contains("void");
         }
     }
+
+    @Nested
+    @DisplayName("Attempt numbering and partial settlement")
+    class AttemptNumbering {
+
+        @Test
+        @DisplayName("a declined attempt schedules the NEXT number, not the one just made")
+        void declinedAttemptDoesNotRepeatItsOwnNumber() {
+            var invoice = openInvoice("100.00");
+            var declined = PaymentAttempt.failed("inv-1", 1, Money.of("100.00", USD), T0,
+                "insufficient_funds", "no funds", java.util.Optional.of(T0.plus(Duration.ofDays(1))));
+
+            // The caller deliberately passes the attempts recorded BEFORE this one. Deriving the next
+            // number from the list size alone used to return 1 again - the id just recorded. The next
+            // attempt is due one day after the first, so evaluate at that instant.
+            var plan = DunningEngine.plan(invoice, DunningSchedule.standard(), List.of(), declined,
+                T0.plus(Duration.ofDays(1)));
+
+            assertThat(plan.kind()).isEqualTo(DunningEngine.Kind.ATTEMPT_COLLECTION);
+            assertThat(plan.attemptIfPresent().orElseThrow().attemptNumber()).isEqualTo(2);
+            assertThat(plan.attemptIfPresent().orElseThrow().attemptId()).isEqualTo("inv-1-2");
+        }
+
+        @Test
+        @DisplayName("a partial payment leaves the invoice open and is not reported as settled")
+        void partialPaymentIsNotSettled() {
+            var invoice = openInvoice("100.00");
+            var partial = PaymentAttempt.succeeded("inv-1", 1, Money.of("40.00", USD), T0);
+
+            var plan = DunningEngine.plan(invoice, DunningSchedule.standard(), List.of(), partial, T0);
+
+            assertThat(plan.kind()).isEqualTo(DunningEngine.Kind.PARTIAL_PAYMENT);
+            assertThat(plan.updatedInvoice().orElseThrow().balanceDue().amount())
+                .isEqualByComparingTo("60.00");
+            assertThat(plan.updatedInvoice().orElseThrow().isSettled()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a full payment is reported as settled")
+        void fullPaymentSettled() {
+            var invoice = openInvoice("100.00");
+            var full = PaymentAttempt.succeeded("inv-1", 1, Money.of("100.00", USD), T0);
+
+            var plan = DunningEngine.plan(invoice, DunningSchedule.standard(), List.of(), full, T0);
+
+            assertThat(plan.kind()).isEqualTo(DunningEngine.Kind.MARK_SETTLED);
+            assertThat(plan.updatedInvoice().orElseThrow().isSettled()).isTrue();
+        }
+    }
 }
