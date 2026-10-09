@@ -40,7 +40,8 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
 
         String sql = """
             SELECT aggregation_id, tenant_id, customer_id, meter_code, aggregation_type,
-                   window_start, window_end, aggregated_value, event_count, last_event_time
+                   window_start, window_end, aggregated_value, event_count, last_event_time,
+                   approximate
             FROM meter_aggregations
             WHERE tenant_id = ? AND customer_id = ? AND meter_code = ?
               AND window_start = ? AND window_end = ?
@@ -57,7 +58,8 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
                 AggregationType.valueOf(rs.getString("aggregation_type")),
                 rs.getBigDecimal("aggregated_value"),
                 rs.getLong("event_count"),
-                Optional.ofNullable(lastTs).map(Timestamp::toInstant)
+                Optional.ofNullable(lastTs).map(Timestamp::toInstant),
+                rs.getBoolean("approximate")
             );
         }, tenantId.value(), custVal, meterCode, startTs, endTs);
 
@@ -77,7 +79,7 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
 
         String updateSql = """
             UPDATE meter_aggregations
-            SET aggregated_value = ?, event_count = ?, last_event_time = ?, updated_at = ?
+            SET aggregated_value = ?, event_count = ?, last_event_time = ?, updated_at = ?, approximate = ?
             WHERE tenant_id = ? AND customer_id = ? AND meter_code = ?
               AND window_start = ? AND window_end = ?
             """;
@@ -88,6 +90,7 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
             aggregation.eventCount(),
             lastTs,
             nowTs,
+            aggregation.isApproximate(),
             aggregation.tenantId().value(),
             custVal,
             aggregation.meterCode(),
@@ -99,8 +102,9 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
             String insertSql = """
                 INSERT INTO meter_aggregations (
                     aggregation_id, tenant_id, customer_id, meter_code, aggregation_type,
-                    window_start, window_end, aggregated_value, event_count, last_event_time, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    window_start, window_end, aggregated_value, event_count, last_event_time,
+                    updated_at, approximate
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """;
             jdbcTemplate.update(
                 insertSql,
@@ -114,7 +118,8 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
                 aggregation.aggregatedValue(),
                 aggregation.eventCount(),
                 lastTs,
-                nowTs
+                nowTs,
+                aggregation.isApproximate()
             );
         }
     }
@@ -195,7 +200,8 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
         } else {
             sql = """
                 SELECT aggregation_id, tenant_id, customer_id, meter_code, aggregation_type,
-                       window_start, window_end, aggregated_value, event_count, last_event_time
+                       window_start, window_end, aggregated_value, event_count, last_event_time,
+                       approximate
                 FROM meter_aggregations
                 WHERE tenant_id = ?
                   AND window_start = ? AND window_end = ?
@@ -214,7 +220,8 @@ public class JdbcMeterAggregationRepository implements MeterAggregationRepositor
                 AggregationType.valueOf(rs.getString("aggregation_type")),
                 rs.getBigDecimal("aggregated_value"),
                 rs.getLong("event_count"),
-                Optional.ofNullable(lastTs).map(Timestamp::toInstant)
+                Optional.ofNullable(lastTs).map(Timestamp::toInstant),
+                rs.getBoolean("approximate")
             );
         }, params);
     }

@@ -12,6 +12,7 @@ import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.entitlement.EntitlementDecision;
 import com.saas.pricing.core.model.wallet.WalletDrawdownResult;
 import com.saas.pricing.starter.EnterprisePricingService;
+import com.saas.pricing.starter.PricingEngineProperties;
 import com.saas.pricing.starter.web.dto.PricingDtos;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -37,9 +38,17 @@ import java.util.Map;
 public class PricingEngineController {
 
     private final EnterprisePricingService pricingService;
+    private final com.saas.pricing.starter.tenant.TenantGuard tenantGuard;
+    private final boolean allowRequestDiscounts;
 
-    public PricingEngineController(EnterprisePricingService pricingService) {
+    public PricingEngineController(
+        EnterprisePricingService pricingService,
+        com.saas.pricing.starter.tenant.TenantGuard tenantGuard,
+        PricingEngineProperties properties
+    ) {
         this.pricingService = pricingService;
+        this.tenantGuard = tenantGuard;
+        this.allowRequestDiscounts = properties.isAllowRequestDiscounts();
     }
 
     @GetMapping("/health")
@@ -70,7 +79,7 @@ public class PricingEngineController {
         @RequestBody PricingDtos.EntitlementCheckRequestDto dto
     ) {
         EntitlementDecision decision = pricingService.verifyEntitlement(
-            TenantId.of(dto.tenantId()),
+            TenantId.of(tenantGuard.verify(dto.tenantId())),
             CustomerId.of(dto.customerId()),
             dto.featureKey(),
             dto.requestedUnits(),
@@ -94,7 +103,7 @@ public class PricingEngineController {
         @RequestBody PricingDtos.WalletDrawdownRequestDto dto
     ) {
         PricingRequest.Builder builder = PricingRequest.builder()
-            .tenantId(dto.tenantId())
+            .tenantId(tenantGuard.verify(dto.tenantId()))
             .customerId(dto.customerId())
             .planCode(dto.planCode())
             .targetCurrency(CurrencyUnit.of(dto.targetCurrency() != null ? dto.targetCurrency() : "USD"));
@@ -119,7 +128,7 @@ public class PricingEngineController {
     private PricingRequest mapToDomainRequest(PricingDtos.PricingEvaluationRequestDto dto) {
         CurrencyUnit targetCurrency = CurrencyUnit.of(dto.targetCurrency() != null ? dto.targetCurrency() : "USD");
         PricingRequest.Builder builder = PricingRequest.builder()
-            .tenantId(dto.tenantId())
+            .tenantId(tenantGuard.verify(dto.tenantId()))
             .planCode(dto.planCode())
             .targetCurrency(targetCurrency);
 
@@ -135,6 +144,16 @@ public class PricingEngineController {
             for (var item : dto.items()) {
                 builder.item(item.itemCode(), item.quantity(), item.attributes() != null ? item.attributes() : Map.of());
             }
+        }
+
+        // Discount authoring is a catalog/contract concern, not a rating input. Allowing it here
+        // would let any caller name its own discount and price its own usage, so it is refused
+        // unless the operator has explicitly enabled it for trusted internal callers.
+        if (dto.discounts() != null && !dto.discounts().isEmpty() && !allowRequestDiscounts) {
+            throw new IllegalArgumentException(
+                "Caller-supplied discounts are not accepted by this endpoint. Configure "
+                    + "pricing.engine.allow-request-discounts=true only for trusted internal callers; "
+                    + "discounts belong in the rate card or a contract override.");
         }
 
         if (dto.discounts() != null) {

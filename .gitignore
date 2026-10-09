@@ -16,3 +16,24 @@ target/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Secrets and local configuration - never commit these
+.env
+.env.*
+!.env.example
+application-local.yml
+application-local.yaml
+application-local.properties
+*.pem
+*.p12
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+secrets.yml
+secrets.yaml
+
+# IDE / tooling
+*.iml
+.factorypath
+.idea/**/workspace.xml

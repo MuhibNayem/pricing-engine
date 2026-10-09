@@ -27,11 +27,27 @@
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <spring.boot.version>4.0.0-M1</spring.boot.version>
+        <spring.boot.version>4.0.6</spring.boot.version>
         <junit.jupiter.version>5.11.4</junit.jupiter.version>
         <assertj.version>3.27.3</assertj.version>
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+        <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
+        <!--
+          H2 is a TEST-ONLY dependency: production runs on PostgreSQL. Pinned rather than inherited
+          from the Spring Boot BOM because 2.4.x breaks the JDBC test fixture - ResourceDatabasePopulator
+          hands H2 each CREATE TABLE as a text block, and 2.4 registers the inline CHECK constraints of
+          such a block with an empty expression, so a constraint that plainly allows 'OPEN' rejects it.
+          Re-pin (and re-run the persistence suite) when this moves.
+        -->
+        <h2.version>2.3.232</h2.version>
+        <!--
+          Testcontainers BOM. Imported explicitly because Maven does not resolve a BOM imported by
+          an imported BOM, so the testcontainers-bom nested inside spring-boot-dependencies has no
+          effect on this project's dependencyManagement. Pinned to the version the Boot 4 BOM
+          declares; bump alongside Boot.
+        -->
+        <testcontainers.version>1.21.3</testcontainers.version>
     </properties>
 
     <dependencyManagement>
@@ -41,6 +57,14 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
                 <version>${spring.boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -69,6 +93,12 @@
 
             <!-- Test Dependencies -->
             <dependency>
+                <groupId>com.h2database</groupId>
+                <artifactId>h2</artifactId>
+                <version>${h2.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
                 <version>${junit.jupiter.version}</version>
@@ -93,20 +123,41 @@
                     <configuration>
                         <release>${java.version}</release>
                         <parameters>true</parameters>
-                        <compilerArgs>
-                            <arg>--enable-preview</arg>
-                        </compilerArgs>
                     </configuration>
                 </plugin>
-                <plugin>
+            <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
-                    <configuration>
-                        <argLine>--enable-preview</argLine>
-                    </configuration>
                 </plugin>
             </plugins>
         </pluginManagement>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>${maven-enforcer-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>enforce-toolchain</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[25,)</version>
+                                    <message>This project targets Java 25 or newer. Override with -Djava.version=&lt;N&gt; to build on another JDK.</message>
+                                </requireJavaVersion>
+                                <requireMavenVersion>
+                                    <version>[3.9,)</version>
+                                </requireMavenVersion>
+                            </rules>
+                            <fail>true</fail>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
     </build>
 </project>

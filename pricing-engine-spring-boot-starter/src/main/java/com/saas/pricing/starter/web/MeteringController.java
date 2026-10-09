@@ -37,8 +37,14 @@ public class MeteringController {
 
     private final UsageMeteringEngine meteringEngine;
     private final EnterprisePricingService pricingService;
+    private final com.saas.pricing.starter.tenant.TenantGuard tenantGuard;
 
-    public MeteringController(UsageMeteringEngine meteringEngine, EnterprisePricingService pricingService) {
+    public MeteringController(
+        UsageMeteringEngine meteringEngine,
+        EnterprisePricingService pricingService,
+        com.saas.pricing.starter.tenant.TenantGuard tenantGuard
+    ) {
+        this.tenantGuard = tenantGuard;
         this.meteringEngine = Objects.requireNonNull(meteringEngine, "meteringEngine cannot be null");
         this.pricingService = pricingService;
     }
@@ -68,7 +74,7 @@ public class MeteringController {
         TimeWindow window = TimeWindow.of(Instant.parse(windowStart), Instant.parse(windowEnd));
         Optional<CustomerId> cust = customerId != null ? Optional.of(CustomerId.of(customerId)) : Optional.empty();
 
-        MeterAggregation agg = meteringEngine.aggregate(TenantId.of(tenantId), cust, meterCode, window);
+        MeterAggregation agg = meteringEngine.aggregate(TenantId.of(tenantGuard.verify(tenantId)), cust, meterCode, window);
         return ResponseEntity.ok(new PricingDtos.MeterAggregationResponseDto(
             agg.tenantId().value(),
             agg.customerId().map(CustomerId::value).orElse(null),
@@ -89,7 +95,7 @@ public class MeteringController {
             throw new IllegalStateException("EnterprisePricingService is not configured");
         }
 
-        TenantId tenantId = TenantId.of(request.tenantId());
+        TenantId tenantId = TenantId.of(tenantGuard.verify(request.tenantId()));
         Optional<CustomerId> customerId = request.customerId() != null
             ? Optional.of(CustomerId.of(request.customerId()))
             : Optional.empty();
@@ -125,7 +131,7 @@ public class MeteringController {
         return MeterEvent.builder()
             .eventId(dto.eventId())
             .idempotencyKey(dto.idempotencyKey())
-            .tenantId(dto.tenantId())
+            .tenantId(tenantGuard.verify(dto.tenantId()))
             .customerId(dto.customerId())
             .meterCode(dto.meterCode())
             .value(dto.value() != null ? dto.value() : java.math.BigDecimal.ONE)

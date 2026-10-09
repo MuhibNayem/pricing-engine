@@ -74,4 +74,20 @@ public record CustomerEntitlement(
             booleanValue, quotaLimit, currentUsage.add(usageDelta), isHardLimit, effectiveFrom, effectiveTo
         );
     }
+
+    /**
+     * Returns this entitlement with its grant switched off.
+     *
+     * <p>A revocation is a value change, not a deletion: the row has to stay so the append-only
+     * event stream has something to reconcile against, and so a revoked feature still has an audit
+     * trail explaining when and why it stopped. The effective window is deliberately left alone —
+     * {@code booleanValue} is what makes it inactive, which is a different thing from it having
+     * expired.
+     */
+    public CustomerEntitlement recordRevocation() {
+        return new CustomerEntitlement(
+            entitlementId, tenantId, customerId, planCode, featureKey, type,
+            false, quotaLimit, currentUsage, isHardLimit, effectiveFrom, effectiveTo
+        );
+    }
 }

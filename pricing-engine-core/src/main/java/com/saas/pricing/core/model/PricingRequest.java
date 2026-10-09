@@ -22,8 +22,50 @@ public record PricingRequest(
     List<BillableItemRequest> items,
     List<Discount> discounts,
     Optional<ProrationWindow> prorationWindow,
-    Map<String, Object> globalAttributes
+    Map<String, Object> globalAttributes,
+    /**
+     * System-time ("as of") instant for bi-temporal resolution.
+     *
+     * <p>Distinct from {@link #evaluationTime}, which is <em>valid</em> time - when the usage
+     * occurred. When empty, the rate card is resolved as known now. When set, the engine resolves
+     * the pricing that was recorded at that instant, which is what makes a historical invoice
+     * reproducible: a customer disputing a charge can be shown the rate that was in effect when
+     * the charge was issued, even after the card has since been superseded.
+     */
+    Optional<Instant> systemTime,
+    /**
+     * The cadence of the period being charged, when the caller knows it.
+     *
+     * <p>Supplies the context that makes {@link FlatFeeModel#cadence()} meaningful. Without it an
+     * annual fee and a monthly fee price identically, because nothing tells the engine which period
+     * a flat amount is supposed to cover.
+     */
+    Optional<BillingCadence> billingCadence,
+    /**
+     * Renewal boundary for {@link #billingCadence}.
+     *
+     * <p>Together these enable anniversary versus calendar billing, short-month and leap-year
+     * clamping, and mid-cycle proration. Both are optional so a caller doing a one-off rating does
+     * not have to supply a cycle.
+     */
+    Optional<BillingCycleAnchor> billingCycleAnchor
 ) implements Serializable {
+
+    /** Backward-compatible constructor for callers that do not need as-of resolution. */
+    public PricingRequest(
+        TenantId tenantId,
+        Optional<CustomerId> customerId,
+        PlanCode planCode,
+        Optional<Instant> evaluationTime,
+        CurrencyUnit targetCurrency,
+        List<BillableItemRequest> items,
+        List<Discount> discounts,
+        Optional<ProrationWindow> prorationWindow,
+        Map<String, Object> globalAttributes
+    ) {
+        this(tenantId, customerId, planCode, evaluationTime, targetCurrency, items, discounts,
+            prorationWindow, globalAttributes, Optional.empty(), Optional.empty(), Optional.empty());
+    }
 
     public PricingRequest {
         Objects.requireNonNull(tenantId, "tenantId cannot be null");
@@ -51,7 +93,8 @@ public record PricingRequest(
         Optional<ProrationWindow> prorationWindow,
         Map<String, Object> globalAttributes
     ) {
-        this(tenantId, Optional.empty(), planCode, evaluationTime, targetCurrency, items, discounts, prorationWindow, globalAttributes);
+        this(tenantId, Optional.empty(), planCode, evaluationTime, targetCurrency, items, discounts,
+            prorationWindow, globalAttributes, Optional.empty(), Optional.empty(), Optional.empty());
     }
 
     public static Builder builder() {
@@ -67,6 +110,9 @@ public record PricingRequest(
         private final List<BillableItemRequest> items = new ArrayList<>();
         private final List<Discount> discounts = new ArrayList<>();
         private ProrationWindow prorationWindow;
+        private Instant systemTime;
+        private BillingCadence billingCadence;
+        private BillingCycleAnchor billingCycleAnchor;
         private final Map<String, Object> globalAttributes = new HashMap<>();
 
         public Builder tenantId(TenantId tenantId) {
@@ -149,6 +195,34 @@ public record PricingRequest(
             return this;
         }
 
+        /**
+         * Resolves pricing as known at {@code instant} (system time) rather than as known now.
+         * Required to reproduce a historical rating after a rate card has been superseded.
+         */
+        public Builder systemTime(Instant instant) {
+            this.systemTime = instant;
+            return this;
+        }
+
+        /** Declares the cadence of the period being charged, so flat-fee cadence can be checked. */
+        public Builder billingCadence(BillingCadence cadence) {
+            this.billingCadence = cadence;
+            return this;
+        }
+
+        /** Declares the renewal boundary for {@link #billingCadence(BillingCadence)}. */
+        public Builder billingCycleAnchor(BillingCycleAnchor anchor) {
+            this.billingCycleAnchor = anchor;
+            return this;
+        }
+
+        /** Convenience: cadence plus its renewal boundary in one call. */
+        public Builder billingCycle(BillingCadence cadence, BillingCycleAnchor anchor) {
+            this.billingCadence = cadence;
+            this.billingCycleAnchor = anchor;
+            return this;
+        }
+
         public PricingRequest build() {
             return new PricingRequest(
                 Objects.requireNonNull(tenantId, "tenantId is required"),
@@ -159,7 +233,10 @@ public record PricingRequest(
                 items,
                 discounts,
                 Optional.ofNullable(prorationWindow),
-                globalAttributes
+                globalAttributes,
+                Optional.ofNullable(systemTime),
+                Optional.ofNullable(billingCadence),
+                Optional.ofNullable(billingCycleAnchor)
             );
         }
     }

@@ -56,27 +56,23 @@ public class CatalogService {
     }
 
     public void configureBandwidthPlan() {
-        RatePlanItem egressItem = RatePlanItem.builder()
-            .itemCode("BANDWIDTH_EGRESS_GB")
-            .pricingModel(PricingModel.GraduatedTierModel.of(
-                Tier.of(BigDecimal.ZERO, BigDecimal.valueOf(10_000), BigDecimal.valueOf(0.0800)),      // 0 - 10,000 GB @ $0.08
+        // The domain model is records with static of(...) factories - there are no builders.
+        RatePlanItem egressItem = RatePlanItem.of("BANDWIDTH_EGRESS_GB", "egress_gb",
+            PricingModel.GraduatedTierModel.of(
+                Tier.of(BigDecimal.ZERO, BigDecimal.valueOf(10_000), BigDecimal.valueOf(0.0800)),          // 0 - 10,000 GB @ $0.08
                 Tier.of(BigDecimal.valueOf(10_000), BigDecimal.valueOf(50_000), BigDecimal.valueOf(0.0600)), // 10,001 - 50,000 GB @ $0.06
-                Tier.unbounded(BigDecimal.valueOf(50_000), BigDecimal.valueOf(0.0400))                 // > 50,000 GB @ $0.04
-            ))
-            .baseCurrency(CurrencyUnit.USD)
-            .proratable(false)
-            .build();
+                Tier.unbounded(BigDecimal.valueOf(50_000), BigDecimal.valueOf(0.0400))                     // > 50,000 GB @ $0.04
+            ),
+            CurrencyUnit.USD
+        );
 
-        RateCard rateCard = RateCard.builder()
-            .rateCardId("rc-global-infra-v1")
-            .tenantId(TenantId.of("GLOBAL")) // Global catalog fallback
-            .planCode(PlanCode.of("CLOUD_INFRA"))
-            .version(1)
-            .currency(CurrencyUnit.USD)
-            .effectiveFrom(Instant.parse("2026-01-01T00:00:00Z"))
-            .hierarchyLevel(CatalogHierarchyLevel.GLOBAL_CATALOG)
-            .addItem(egressItem)
-            .build();
+        RateCard rateCard = RateCard.global(
+            "rc-global-infra-v1",
+            PlanCode.of("CLOUD_INFRA"),
+            1,
+            Instant.parse("2026-01-01T00:00:00Z"),
+            List.of(egressItem)
+        );
 
         rateCardRepository.save(rateCard);
     }
@@ -142,8 +138,8 @@ public class MeteringOrchestrationService {
             .tenantId(TenantId.of(tenantId))
             .customerId(CustomerId.of(customerId))
             .meterCode("API_INVOCATIONS")
-            .eventValue(BigDecimal.valueOf(requestCount))
-            .eventTimestamp(Instant.now())
+            .value(BigDecimal.valueOf(requestCount))
+            .timestamp(Instant.now())
             .property("endpoint", "/v1/embeddings")
             .build();
 
@@ -190,23 +186,21 @@ public class EnterpriseContractService {
     }
 
     public void provisionNegotiatedContract(String tenantId, String customerId) {
-        ContractOverride override = ContractOverride.builder()
-            .contractId("contract-acme-2026")
-            .tenantId(TenantId.of(tenantId))
-            .customerId(CustomerId.of(customerId))
-            .planCode(PlanCode.of("ENTERPRISE_PLAN"))
-            .version(1)
-            .effectiveFrom(Instant.parse("2026-01-01T00:00:00Z"))
-            .effectiveTo(Instant.parse("2027-01-01T00:00:00Z"))
-            // Custom negotiated price: $18/seat instead of $25 catalog default
-            .overrideItem(RatePlanItem.builder()
-                .itemCode("SEATS")
-                .pricingModel(PricingModel.PerUnitModel.of(BigDecimal.valueOf(18.00)))
-                .baseCurrency(CurrencyUnit.USD)
-                .build())
-            // Custom contract-level discount: 15% VIP discount
-            .discount(Discount.percentage("VIP_ENTERPRISE_15", BigDecimal.valueOf(15)))
-            .build();
+        // ContractOverride is a record with static of(...) factories - there is no builder().
+        RatePlanItem negotiatedSeat = RatePlanItem.of("SEATS", "seats",
+            PricingModel.PerUnitModel.of(new BigDecimal("18.00")), CurrencyUnit.USD);
+
+        ContractOverride override = ContractOverride.of(
+            "contract-acme-2026",
+            TenantId.of(tenantId),
+            CustomerId.of(customerId),
+            PlanCode.of("ENTERPRISE_PLAN"),
+            1,
+            Instant.parse("2026-01-01T00:00:00Z"),
+            Instant.parse("2027-01-01T00:00:00Z"),
+            List.of(negotiatedSeat),   // $18/seat instead of the $25 catalog default
+            List.of(Discount.percentage("VIP_ENTERPRISE_15", new BigDecimal("15")))
+        );
 
         contractOverrideRepository.save(override);
     }

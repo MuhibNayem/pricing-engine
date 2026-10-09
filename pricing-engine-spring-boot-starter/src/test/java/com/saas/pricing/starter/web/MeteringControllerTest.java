@@ -28,7 +28,16 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(classes = PricingEngineAutoConfiguration.class)
+@org.springframework.context.annotation.Import(TestTenantConfiguration.class)
 class MeteringControllerTest {
+
+
+
+    /** This class acts as "tenant_ctrl" unless a test states otherwise. */
+    @org.junit.jupiter.api.BeforeEach
+    void actAsDefaultTenant() {
+        TestTenantConfiguration.actAs("tenant_ctrl");
+    }
 
     @Autowired
     private MeteringController controller;
@@ -82,6 +91,7 @@ class MeteringControllerTest {
     @Test
     @DisplayName("Should query aggregations via controller")
     void testGetAggregation() {
+        TestTenantConfiguration.actAs("tenant_agg");
         var eventDto = new PricingDtos.MeterEventDto(
             "evt_agg_1",
             "key_agg_1",
@@ -110,6 +120,7 @@ class MeteringControllerTest {
     @Test
     @DisplayName("Should ingest, aggregate, rate, and draw down wallet end-to-end via controller")
     void testRateAndDrawdown() {
+        TestTenantConfiguration.actAs("tenant_draw");
         TenantId tenantId = TenantId.of("tenant_draw");
         CustomerId customerId = CustomerId.of("cust_draw");
         PlanCode planCode = PlanCode.of("DRAW_PLAN");

@@ -1,5 +1,7 @@
 package com.saas.pricing.starter;
 
+import com.saas.pricing.core.model.invoice.InvoiceNumberScheme;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.math.RoundingMode;
@@ -51,6 +53,19 @@ public class PricingEngineProperties {
     private boolean webEnabled = true;
 
     /**
+     * Whether a caller may submit discounts in the request body.
+     *
+     * <p><strong>Defaults to {@code false}.</strong> Discount authoring is a catalog and contract
+     * concern, not a rating-input concern: a caller that can name its own discount can price its
+     * own usage. Even with the engine's own caps (percentage is bounded to 100% and a discount is
+     * clamped to the line balance), an authorised caller can zero out its own invoice through an
+     * endpoint that is not meant to be a discount channel.
+     *
+     * <p>Enable only for trusted internal callers, for example an internal quote-preview service.
+     */
+    private boolean allowRequestDiscounts = false;
+
+    /**
      * Usage metering configuration properties.
      */
     private MeteringProperties metering = new MeteringProperties();
@@ -59,6 +74,12 @@ public class PricingEngineProperties {
      * Streaming and event ingestion properties.
      */
     private StreamingProperties streaming = new StreamingProperties();
+
+    /**
+     * Invoice document numbering. Legal configuration, not cosmetic: EU and UK rules require
+     * sequential account-wide numbering, and other markets commonly prefer per-customer series.
+     */
+    private InvoiceNumberProperties invoiceNumbering = new InvoiceNumberProperties();
 
     public enum AuditSinkType {
         IN_MEMORY,
@@ -91,6 +112,60 @@ public class PricingEngineProperties {
 
         public void setAllowedLatenessSeconds(Long allowedLatenessSeconds) {
             this.allowedLatenessSeconds = allowedLatenessSeconds;
+        }
+    }
+
+    /** How invoice document numbers are generated. */
+    public static class InvoiceNumberProperties {
+
+        /**
+         * ACCOUNT_SEQUENTIAL gives one series per tenant (INV-0001); CUSTOMER_SEQUENTIAL gives one
+         * per customer behind that customer's own prefix (ACME-0001).
+         */
+        private InvoiceNumberScheme scheme = InvoiceNumberScheme.ACCOUNT_SEQUENTIAL;
+
+        /** Prefix for account-level numbering. 1-12 uppercase letters or digits. */
+        private String prefix = "INV";
+
+        /** Digits in the sequence, at least 1. */
+        private int padding = 4;
+
+        /**
+         * The first number a series may use. Raise this to resume a sequence another system was
+         * using during a migration; never lower it below a number already issued.
+         */
+        private long startAt = 1L;
+
+        public InvoiceNumberScheme getScheme() {
+            return scheme;
+        }
+
+        public void setScheme(InvoiceNumberScheme scheme) {
+            this.scheme = scheme;
+        }
+
+        public String getPrefix() {
+            return prefix;
+        }
+
+        public void setPrefix(String prefix) {
+            this.prefix = prefix;
+        }
+
+        public int getPadding() {
+            return padding;
+        }
+
+        public void setPadding(int padding) {
+            this.padding = padding;
+        }
+
+        public long getStartAt() {
+            return startAt;
+        }
+
+        public void setStartAt(long startAt) {
+            this.startAt = startAt;
         }
     }
 
@@ -175,6 +250,14 @@ public class PricingEngineProperties {
         return webEnabled;
     }
 
+    public boolean isAllowRequestDiscounts() {
+        return allowRequestDiscounts;
+    }
+
+    public void setAllowRequestDiscounts(boolean allowRequestDiscounts) {
+        this.allowRequestDiscounts = allowRequestDiscounts;
+    }
+
     public void setWebEnabled(boolean webEnabled) {
         this.webEnabled = webEnabled;
     }
@@ -185,6 +268,14 @@ public class PricingEngineProperties {
 
     public void setMetering(MeteringProperties metering) {
         this.metering = metering;
+    }
+
+    public InvoiceNumberProperties getInvoiceNumbering() {
+        return invoiceNumbering;
+    }
+
+    public void setInvoiceNumbering(InvoiceNumberProperties invoiceNumbering) {
+        this.invoiceNumbering = invoiceNumbering;
     }
 
     public StreamingProperties getStreaming() {

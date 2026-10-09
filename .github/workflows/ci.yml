@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # ubuntu-latest ships with Docker, so the Testcontainers PostgreSQL suite runs here too.
+      # The suite skips itself in environments without Docker rather than reporting a false pass.
+      - name: Build and verify
+        run: mvn -B verify

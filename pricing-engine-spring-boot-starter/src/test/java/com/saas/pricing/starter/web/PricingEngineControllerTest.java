@@ -24,7 +24,9 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(classes = PricingEngineAutoConfiguration.class)
+@org.springframework.context.annotation.Import(TestTenantConfiguration.class)
 class PricingEngineControllerTest {
+
 
     @Autowired
     private PricingEngineController controller;

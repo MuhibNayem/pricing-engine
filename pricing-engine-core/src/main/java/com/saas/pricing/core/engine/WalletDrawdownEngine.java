@@ -34,6 +34,18 @@ public final class WalletDrawdownEngine {
         Objects.requireNonNull(invoiceAmount, "invoiceAmount cannot be null");
         Objects.requireNonNull(evalTime, "evalTime cannot be null");
 
+        // A wallet denominated in one currency must never silently settle an obligation in
+        // another. Doing so values the drawdown 1:1, so a EUR 50.00 invoice would be paid from
+        // 50.00 USD of credit — a currency mismatch that is invisible in the output and is a
+        // direct revenue leak. Conversion is the caller's responsibility, and it must happen
+        // before the drawdown, not inside it.
+        if (!wallet.currency().equals(invoiceAmount.currency())) {
+            throw new IllegalArgumentException(
+                    "Wallet currency " + wallet.currency().code() + " cannot settle invoice denominated in "
+                            + invoiceAmount.currency().code()
+                            + "; convert the invoice to the wallet currency before drawing down");
+        }
+
         if (invoiceAmount.isZero() || invoiceAmount.isNegative()) {
             return new WalletDrawdownResult(
                 wallet.walletId(),
@@ -59,7 +71,12 @@ public final class WalletDrawdownEngine {
             .toList();
 
         Money remainingCashDue = invoiceAmount;
-        BigDecimal totalCreditsDrawn = BigDecimal.ZERO;
+        // Credits are denominated in the currency's minor unit, exactly like the money they are
+        // worth. Dividing at a fixed scale of 8 used to leave grant balances at scale 8 while the
+        // money they represent was at scale 2, so a balance no longer round-tripped through
+        // credits x rate and reconciliation against a cash ledger drifted.
+        int creditScale = invoiceAmount.currency().defaultFractionDigits();
+        BigDecimal totalCreditsDrawn = BigDecimal.ZERO.setScale(creditScale);
         Money totalMoneyDrawn = Money.zero(invoiceAmount.currency());
         List<DrawdownTransaction> transactions = new ArrayList<>();
 
@@ -81,7 +98,7 @@ public final class WalletDrawdownEngine {
             } else {
                 // Partial deduction
                 moneyToDraw = remainingCashDue;
-                creditsToDraw = remainingCashDue.amount().divide(rate, 8, RoundingMode.HALF_EVEN);
+                creditsToDraw = remainingCashDue.amount().divide(rate, creditScale, RoundingMode.HALF_EVEN);
                 // Clamp to not exceed remaining credits due to rounding
                 creditsToDraw = creditsToDraw.min(grant.remainingCredits());
             }

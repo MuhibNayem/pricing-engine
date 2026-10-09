@@ -135,14 +135,18 @@ public class InvoicingService {
 
 ### 1. Dynamic LLM Inference Token Billing
 ```java
-RatePlanItem llmItem = RatePlanItem.builder()
-    .itemCode("LLM_INFERENCE")
-    .pricingModel(PricingModel.DynamicFormulaModel.of(
+// The domain model is a set of records with static `of(...)` factories; there are no builders.
+RatePlanItem llmItem = RatePlanItem.of(
+    "LLM_INFERENCE",
+    "llm_tokens",
+    PricingModel.DynamicFormulaModel.of(
+        // Variables resolve bare or with a leading '#'. Division MUST use #divide(a, b):
+        // SpEL's own '/' divides BigDecimals to the operands' scale, so 7 / 2 returns 4.
         "(promptTokens * 0.000003) + (cachedTokens * 0.0000015) + (completionTokens * 0.000015)",
         "promptTokens", "cachedTokens", "completionTokens"
-    ))
-    .baseCurrency(CurrencyUnit.USD)
-    .build();
+    ),
+    CurrencyUnit.USD
+);
 
 PricingRequest request = PricingRequest.builder()
     .tenantId("ai-corp")
@@ -179,8 +183,8 @@ MeterEvent event = MeterEvent.builder()
     .tenantId(TenantId.of("tenant-01"))
     .customerId(CustomerId.of("cust-42"))
     .meterCode("API_CALLS")
-    .eventValue(BigDecimal.valueOf(100))
-    .eventTimestamp(Instant.now())
+    .value(BigDecimal.valueOf(100))        // not eventValue(...)
+    .timestamp(Instant.now())              // not eventTimestamp(...)
     .build();
 
 // Ingest with deduplication
@@ -212,6 +216,27 @@ asyncRatingTriggerService.aggregateRateAndDrawdownAsync(
 | `POST` | `/api/v1/pricing/meter/events/batch` | Batch ingests raw meter telemetry events. |
 | `GET` | `/api/v1/pricing/meter/aggregations` | Queries materialized time-window aggregations (`SUM`, `MAX`, etc.). |
 | `POST` | `/api/v1/pricing/meter/rate-and-drawdown` | Triggers immediate rating and prepaid credit deduction for a window. |
+| `POST` | `/api/v1/pricing/entitlements/verify` | Verifies a real-time entitlement / quota check. |
+| `POST` | `/api/v1/pricing/wallets/drawdown` | Rates a request and atomically draws down a prepaid credit wallet. |
+
+### ⚠️ Tenant isolation is mandatory
+
+The REST API **will not start** unless your application supplies a `TenantResolver` bean. The
+tenant is taken from the authenticated caller and never from the request body; a body `tenantId`
+that disagrees with the authenticated tenant is rejected with `403`.
+
+```java
+@Bean
+TenantResolver tenantResolver() {
+    // e.g. SecurityContextHolder.getContext().getAuthentication().getName()
+    return () -> currentTenantFromSecurityContext();
+}
+```
+
+To run without the REST API, set `pricing.engine.web-enabled=false`.
+
+Likewise, `pricing.engine.persistence-type=JDBC` **fails at startup** if no `JdbcTemplate` is
+available, rather than silently degrading to in-memory repositories.
 
 ---
 
@@ -248,7 +273,8 @@ Aequitas exposes production **Micrometer Metrics** under `pricing.engine.*`:
 To compile and execute the complete test suite under **Java 25**:
 
 ```bash
-JAVA_HOME=/home/amnayem/.sdkman/candidates/java/25.0.2-open PATH=$JAVA_HOME/bin:$PATH mvn clean test
+# Requires JDK 25+ (maven-enforcer-plugin enforces this).
+JAVA_HOME=$(/usr/libexec/java_home -v 25) mvn clean test
 ```
 
 ### Test Results Summary:

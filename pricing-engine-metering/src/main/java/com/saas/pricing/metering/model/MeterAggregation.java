@@ -15,6 +15,11 @@ import java.util.Optional;
 /**
  * Aggregated meter reading for a specific time window.
  * Can be directly converted to a {@link BillableItemRequest} for evaluation by the PricingEngine.
+ *
+ * <p>{@code approximate} is false for exact aggregations. It is set to true when the engine could not
+ * compute an exact result for the window — currently only when a {@link AggregationType#DISTINCT_COUNT}
+ * meter exceeded the configured distinct-value cardinality cap, in which case {@code aggregatedValue} is
+ * a capped <em>undercount</em>. Downstream rating must refuse to bill an undercount rather than charge it.</p>
  */
 public record MeterAggregation(
     TenantId tenantId,
@@ -24,7 +29,8 @@ public record MeterAggregation(
     AggregationType aggregationType,
     BigDecimal aggregatedValue,
     long eventCount,
-    Optional<Instant> lastEventTime
+    Optional<Instant> lastEventTime,
+    boolean approximate
 ) implements Serializable {
 
     public MeterAggregation {
@@ -41,8 +47,36 @@ public record MeterAggregation(
         }
     }
 
+    /**
+     * Backward-compatible constructor for exact aggregations, retained so that existing adapters
+     * constructing the previous 8-component form keep compiling and behave identically.
+     */
+    public MeterAggregation(
+        TenantId tenantId,
+        Optional<CustomerId> customerId,
+        String meterCode,
+        TimeWindow window,
+        AggregationType aggregationType,
+        BigDecimal aggregatedValue,
+        long eventCount,
+        Optional<Instant> lastEventTime
+    ) {
+        this(tenantId, customerId, meterCode, window, aggregationType, aggregatedValue, eventCount, lastEventTime, false);
+    }
+
     public static MeterAggregation empty(TenantId tenantId, Optional<CustomerId> customerId, String meterCode, TimeWindow window, AggregationType type) {
-        return new MeterAggregation(tenantId, customerId, meterCode, window, type, BigDecimal.ZERO, 0L, Optional.empty());
+        return new MeterAggregation(tenantId, customerId, meterCode, window, type, BigDecimal.ZERO, 0L, Optional.empty(), false);
+    }
+
+    public static MeterAggregation empty(TenantId tenantId, Optional<CustomerId> customerId, String meterCode, TimeWindow window, AggregationType type, boolean approximate) {
+        return new MeterAggregation(tenantId, customerId, meterCode, window, type, BigDecimal.ZERO, 0L, Optional.empty(), approximate);
+    }
+
+    /**
+     * @return true when {@link #aggregatedValue()} is a capped undercount and must not be billed as-is.
+     */
+    public boolean isApproximate() {
+        return approximate;
     }
 
     /**
@@ -54,6 +88,7 @@ public record MeterAggregation(
         attrs.put("windowEnd", window.endTime().toString());
         attrs.put("aggregationType", aggregationType.name());
         attrs.put("eventCount", eventCount);
+        attrs.put("approximate", approximate);
         lastEventTime.ifPresent(t -> attrs.put("lastEventTime", t.toString()));
 
         return BillableItemRequest.of(meterCode, aggregatedValue, attrs);

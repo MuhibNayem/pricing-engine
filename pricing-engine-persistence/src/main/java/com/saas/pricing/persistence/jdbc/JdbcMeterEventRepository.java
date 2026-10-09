@@ -8,6 +8,7 @@ import com.saas.pricing.metering.spi.IdempotencyStore;
 import com.saas.pricing.metering.spi.MeterEventRepository;
 import com.saas.pricing.persistence.json.PricingJsonMapper;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.sql.Timestamp;
@@ -59,14 +60,53 @@ public class JdbcMeterEventRepository implements MeterEventRepository, Idempoten
         }
     }
 
+    /**
+     * Atomically claims an idempotency key.
+     *
+     * <p>This used to be a {@code SELECT COUNT(*)} against {@code meter_events} that recorded
+     * nothing. Two concurrent callers both saw "not present", both were admitted, and only the
+     * unique constraint on {@code meter_events} saved the system from a double charge. The store's
+     * own answer was wrong even though the system as a whole happened to be protected.
+     *
+     * <p>Now the claim itself is the atomic operation: an INSERT into
+     * {@code meter_idempotency_keys} succeeds (we own the key) or violates the primary key (we do
+     * not). Plain INSERT is used rather than {@code ON CONFLICT DO NOTHING} because the latter is
+     * rejected by the H2 version the test suite runs against, even in PostgreSQL emulation mode.
+     *
+     * @return true if this caller claimed the key
+     */
     @Override
     public boolean checkAndRecord(TenantId tenantId, String idempotencyKey, Instant eventTime) {
         Objects.requireNonNull(tenantId, "tenantId cannot be null");
         Objects.requireNonNull(idempotencyKey, "idempotencyKey cannot be null");
 
-        String checkSql = "SELECT COUNT(*) FROM meter_events WHERE tenant_id = ? AND idempotency_key = ?";
-        Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, tenantId.value(), idempotencyKey);
-        return count == null || count == 0;
+        String sql = "INSERT INTO meter_idempotency_keys (tenant_id, idempotency_key, recorded_at) VALUES (?, ?, ?)";
+        try {
+            return jdbcTemplate.update(sql, tenantId.value(), idempotencyKey,
+                    Timestamp.from(eventTime != null ? eventTime : Instant.now())) > 0;
+        } catch (DataIntegrityViolationException e) {
+            // Someone else already holds the key.
+            return false;
+        }
+    }
+
+    /**
+     * Releases a previously claimed key so a legitimate retry is not permanently rejected as a
+     * duplicate.
+     *
+     * <p>The {@code recorded_at} predicate makes this a compare-and-remove: if the row has been
+     * replaced since we wrote it, we must not delete the new owner's claim.
+     */
+    @Override
+    public boolean remove(TenantId tenantId, String idempotencyKey, Instant recordedAt) {
+        Objects.requireNonNull(tenantId, "tenantId cannot be null");
+        Objects.requireNonNull(idempotencyKey, "idempotencyKey cannot be null");
+
+        if (recordedAt == null) {
+            return false;
+        }
+        String sql = "DELETE FROM meter_idempotency_keys WHERE tenant_id = ? AND idempotency_key = ? AND recorded_at = ?";
+        return jdbcTemplate.update(sql, tenantId.value(), idempotencyKey, Timestamp.from(recordedAt)) > 0;
     }
 
     @Override

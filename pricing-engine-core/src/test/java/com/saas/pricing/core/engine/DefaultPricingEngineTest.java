@@ -144,11 +144,26 @@ class DefaultPricingEngineTest {
         assertThat(result.totalDiscount().amount()).isEqualByComparingTo("30.50");
         assertThat(result.totalNet().amount()).isEqualByComparingTo("213.50");
 
-        // Taxes: 10% on Base ($49.00 -> $4.90) + 10% on net Seats ($94.50 -> $9.45) = $14.35
-        assertThat(result.totalTax().amount()).isEqualByComparingTo("14.35");
+        // Tax is due on the amount actually charged, so the $20.00 invoice discount must be
+        // apportioned onto the lines BEFORE tax is assessed.
+        //
+        // Invoice discount apportionment (largest-remainder, weights = pre-discount nets):
+        //   Base  $49.00 / $233.50 x $20.00 = $4.20
+        //   Seats $94.50 / $233.50 x $20.00 = $8.09
+        //   API   $90.00 / $233.50 x $20.00 = $7.71   (sums to exactly $20.00)
+        // Discounted nets: Base $44.80, Seats $86.41, API $82.29
+        //
+        // Tax rates: 10% on BASE_SUB and SEATS; API_CALLS is untaxed by the provider.
+        //   Base  $44.80 -> $4.48
+        //   Seats $86.41 -> $8.64
+        //   = $13.12
+        //
+        // The previous expectation of $14.35 taxed the pre-discount amounts ($49.00 and $94.50)
+        // and therefore over-charged VAT by $1.23 on this invoice.
+        assertThat(result.totalTax().amount()).isEqualByComparingTo("13.12");
 
-        // Final total: Net ($213.50) + Tax ($14.35) = $227.85
-        assertThat(result.finalTotal().amount()).isEqualByComparingTo("227.85");
+        // Final total: Net ($213.50) + Tax ($13.12) = $226.62
+        assertThat(result.finalTotal().amount()).isEqualByComparingTo("226.62");
 
         // Verify Trace & Audit sink
         assertThat(result.trace().steps()).isNotEmpty();

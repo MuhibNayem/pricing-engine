@@ -1,6 +1,8 @@
 package com.saas.pricing.core.engine;
 
 import com.saas.pricing.core.model.BillableItemRequest;
+import com.saas.pricing.core.model.BillingCadence;
+import com.saas.pricing.core.model.BillingPeriod;
 import com.saas.pricing.core.model.CurrencyUnit;
 import com.saas.pricing.core.model.Discount;
 import com.saas.pricing.core.model.DiscountScope;
@@ -9,6 +11,7 @@ import com.saas.pricing.core.model.Money;
 import com.saas.pricing.core.model.PricingRequest;
 import com.saas.pricing.core.model.PricingResult;
 import com.saas.pricing.core.model.RateCard;
+import com.saas.pricing.core.model.PricingModel;
 import com.saas.pricing.core.model.RatePlanItem;
 import com.saas.pricing.core.model.RatedLineItem;
 import com.saas.pricing.core.model.TaxRate;
@@ -96,7 +99,7 @@ public final class DefaultPricingEngine implements PricingEngine {
             request.customerId(),
             request.planCode(),
             evalTime,
-            Optional.empty()
+            request.systemTime()
         );
         RateCard rateCard = resolvedHierarchy.effectiveRateCard();
         List<Discount> effectiveDiscounts = new ArrayList<>(request.discounts());
@@ -109,6 +112,9 @@ public final class DefaultPricingEngine implements PricingEngine {
 
         CurrencyUnit targetCurrency = request.targetCurrency();
         List<RatedLineItem> lineItems = new ArrayList<>();
+        // Tax rates resolved per line item, kept in step with lineItems so that tax can be
+        // recomputed if an invoice-level discount is later apportioned onto that line.
+        List<List<TaxRate>> lineTaxRates = new ArrayList<>();
 
         Money grossAccumulator = Money.zero(targetCurrency);
         Money lineDiscountAccumulator = Money.zero(targetCurrency);
@@ -142,6 +148,12 @@ public final class DefaultPricingEngine implements PricingEngine {
             Money grossItemAmount = outcome.grossAmount();
             List<TraceStep> itemTrace = new ArrayList<>(outcome.traceSteps());
 
+            // A flat fee is an amount for ONE period. Without this check an annual plan's rate and a
+            // monthly plan's rate are indistinguishable to the engine, so a $4,988/year card and a
+            // $499/month card price identically on every evaluation. Declaring the cadence in the
+            // request is what makes FlatFeeModel.cadence() mean anything.
+            verifyFlatFeeCadence(planItem, request, itemTrace);
+
             // Apply Proration if eligible
             if (planItem.proratable() && request.prorationWindow().isPresent()) {
                 BigDecimal factor = request.prorationWindow().get().calculateFactor();
@@ -169,13 +181,12 @@ public final class DefaultPricingEngine implements PricingEngine {
             Money lineNet = discountOutcome.netAmount();
             itemTrace.addAll(discountOutcome.traceSteps());
 
-            // Calculate item-level taxes
+            // Calculate item-level taxes on the net of line-level discounts
             List<TaxRate> taxRates = taxProvider.resolveTaxRates(request.tenantId(), itemReq.itemCode(), combinedAttrs);
-            Money lineTax = Money.zero(targetCurrency);
+            Money lineTax = taxForNet(lineNet, taxRates, targetCurrency);
             for (TaxRate taxRate : taxRates) {
                 BigDecimal taxFactor = taxRate.percentage().divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_EVEN);
                 Money taxForRate = lineNet.times(taxFactor);
-                lineTax = lineTax.plus(taxForRate);
                 itemTrace.add(TraceStep.of("TAX_APPLIED", "Tax %s (%s%% in %s): %s".formatted(
                     taxRate.taxCode(), taxRate.percentage(), taxRate.jurisdiction(), taxForRate
                 )));
@@ -187,6 +198,7 @@ public final class DefaultPricingEngine implements PricingEngine {
             lineDiscountAccumulator = lineDiscountAccumulator.plus(lineDiscount);
             netAccumulator = netAccumulator.plus(lineNet);
             taxAccumulator = taxAccumulator.plus(lineTax);
+            lineTaxRates.add(List.copyOf(taxRates));
 
             lineItems.add(new RatedLineItem(
                 itemReq.itemCode(),
@@ -221,15 +233,24 @@ public final class DefaultPricingEngine implements PricingEngine {
                 .toList();
             List<Money> distributedDiscounts = RemainderAllocator.allocate(totalInvoiceDiscount, weights);
             List<RatedLineItem> updatedLineItems = new ArrayList<>(lineItems.size());
+            Money recomputedTax = Money.zero(targetCurrency);
             for (int i = 0; i < lineItems.size(); i++) {
                 RatedLineItem original = lineItems.get(i);
                 Money allocatedDisc = distributedDiscounts.get(i);
                 Money newNet = original.netAmount().minus(allocatedDisc).roundToCurrency();
-                Money newTotal = newNet.plus(original.taxAmount()).roundToCurrency();
+
+                // Tax is due on the amount actually charged. Reducing the net by an invoice-level
+                // discount must reduce the tax by the same proportion, otherwise every
+                // invoice-level discount over-charges VAT/GST.
+                Money newTax = taxForNet(newNet, lineTaxRates.get(i), targetCurrency);
+                Money newTotal = newNet.plus(newTax).roundToCurrency();
+                recomputedTax = recomputedTax.plus(newTax);
+
                 List<TraceStep> updatedTrace = new ArrayList<>(original.traceSteps());
                 if (!allocatedDisc.isZero()) {
                     updatedTrace.add(TraceStep.of("INVOICE_DISCOUNT_ALLOCATED",
-                        "Apportioned invoice discount %s: adjusted net = %s".formatted(allocatedDisc, newNet)));
+                        "Apportioned invoice discount %s: adjusted net = %s, tax restated %s -> %s"
+                            .formatted(allocatedDisc, newNet, original.taxAmount(), newTax)));
                 }
                 updatedLineItems.add(new RatedLineItem(
                     original.itemCode(),
@@ -238,16 +259,17 @@ public final class DefaultPricingEngine implements PricingEngine {
                     original.grossAmount(),
                     original.discountAmount().plus(allocatedDisc).roundToCurrency(),
                     newNet,
-                    original.taxAmount(),
+                    newTax.roundToCurrency(),
                     newTotal,
                     updatedTrace
                 ));
             }
             lineItems = updatedLineItems;
+            taxAccumulator = recomputedTax;
             trace.addStep("INVOICE_DISCOUNT_DISTRIBUTED",
-                "Allocated %s invoice discount across %d line items with zero penny drift".formatted(
-                    totalInvoiceDiscount, lineItems.size()
-                ));
+                "Allocated %s invoice discount across %d line items with zero penny drift; "
+                    .formatted(totalInvoiceDiscount, lineItems.size())
+                    + "tax restated to %s on the discounted base".formatted(taxAccumulator));
         }
 
         Money totalDiscounts = lineDiscountAccumulator.plus(totalInvoiceDiscount).roundToCurrency();
@@ -302,5 +324,56 @@ public final class DefaultPricingEngine implements PricingEngine {
 
         auditSink.record(result);
         return result;
+    }
+
+    /**
+     * Rejects a flat fee whose cadence does not match the period being charged, and records the
+     * resolved billing period on the trace.
+     *
+     * <p>Only enforced when the caller declares {@link PricingRequest#billingCadence()}. A
+     * one-off rating that does not know its cycle is still accepted, because inventing an anchor
+     * would be a guess; but as soon as the cadence is declared, a mismatch is an error rather than
+     * a ten-times overcharge.
+     */
+    private static void verifyFlatFeeCadence(RatePlanItem planItem, PricingRequest request,
+                                             List<TraceStep> itemTrace) {
+        if (!(planItem.pricingModel() instanceof PricingModel.FlatFeeModel flatFee)) {
+            return;
+        }
+        if (request.billingCadence().isPresent() && request.billingCycleAnchor().isPresent()) {
+            BillingPeriod period = request.billingCycleAnchor().get()
+                .periodContaining(request.evaluationTime().orElse(Instant.now()), request.billingCadence().get());
+            itemTrace.add(TraceStep.of("BILLING_PERIOD_RESOLVED",
+                "Charging cadence %s, period [%s .. %s)".formatted(
+                    request.billingCadence().get(), period.start(), period.end())));
+        }
+        if (request.billingCadence().isEmpty()) {
+            return;
+        }
+        BillingCadence declared = request.billingCadence().get();
+        BillingCadence feeCadence = flatFee.cadence();
+        if (feeCadence.isRecurring() && feeCadence != declared) {
+            throw new IllegalArgumentException(
+                "Flat fee for item '%s' is priced at %s cadence but the request is charging a %s period. "
+                    .formatted(planItem.itemCode(), feeCadence, declared)
+                    + "A flat fee covers exactly one period; declare the matching cadence or use a model "
+                    + "that scales with period length.");
+        }
+    }
+
+    /**
+     * Computes the tax due on a net amount for a given set of rates.
+     *
+     * <p>Single definition of "tax on this base", used both when a line is first rated and when an
+     * invoice-level discount is later apportioned onto it. Keeping one implementation is what
+     * guarantees the invoice total equals the sum of its lines.
+     */
+    private static Money taxForNet(Money net, List<TaxRate> taxRates, CurrencyUnit currency) {
+        Money tax = Money.zero(currency);
+        for (TaxRate taxRate : taxRates) {
+            BigDecimal taxFactor = taxRate.percentage().divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_EVEN);
+            tax = tax.plus(net.times(taxFactor));
+        }
+        return tax.roundToCurrency();
     }
 }

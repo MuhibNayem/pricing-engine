@@ -12,7 +12,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PricingEngineAutoConfigurationTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(PricingEngineAutoConfiguration.class));
+        .withConfiguration(AutoConfigurations.of(PricingEngineAutoConfiguration.class))
+        // The engine refuses to start without a TenantResolver; supply a trivial one so these
+        // tests can exercise the beans rather than the fail-fast path.
+        .withBean(com.saas.pricing.starter.tenant.TenantResolver.class, () -> (com.saas.pricing.starter.tenant.TenantResolver) () -> "tenant_test");
 
     @Test
     @DisplayName("Should auto-configure PricingEngine and all enterprise beans when enabled")
@@ -28,6 +31,22 @@ class PricingEngineAutoConfigurationTest {
             assertThat(context).hasSingleBean(com.saas.pricing.core.engine.EntitlementVerifier.class);
             assertThat(context).hasSingleBean(com.saas.pricing.core.engine.BatchPricingEngine.class);
         });
+    }
+
+    @Test
+    @DisplayName("Should refuse to start the web API without a TenantResolver")
+    void testWebApiFailsClosedWithoutTenantResolver() {
+        // Without a resolver the only tenant available is the one in the request body, which lets
+        // any caller act as any tenant. Refusing to start is the safe default.
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(PricingEngineAutoConfiguration.class))
+            .withPropertyValues("pricing.engine.web-enabled=true")
+            .run(context -> {
+                assertThat(context).hasFailed();
+                assertThat(context.getStartupFailure())
+                    .hasRootCauseInstanceOf(IllegalStateException.class);
+                assertThat(context.getStartupFailure().getMessage()).contains("TenantResolver");
+            });
     }
 
     @Test
