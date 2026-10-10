@@ -33,6 +33,8 @@ import java.util.Optional;
  * @param lastError     the most recent failure message
  * @param deliveredAt   when delivery finally succeeded
  * @param signature     HMAC over the payload, so the receiver can prove authenticity
+ * @param traceContext  the W3C trace context captured when the event was queued, so a trace
+ *                      survives the asynchronous hop out of this process — see {@link TraceContext}
  */
 public record OutboxEvent(
     String eventId,
@@ -47,7 +49,8 @@ public record OutboxEvent(
     Optional<Instant> nextAttemptAt,
     Optional<String> lastError,
     Optional<Instant> deliveredAt,
-    Optional<String> signature
+    Optional<String> signature,
+    TraceContext traceContext
 ) implements Serializable {
 
     /** Maximum delivery attempts before an event is treated as undeliverable. */
@@ -66,6 +69,7 @@ public record OutboxEvent(
         Objects.requireNonNull(lastError, "lastError cannot be null");
         Objects.requireNonNull(deliveredAt, "deliveredAt cannot be null");
         Objects.requireNonNull(signature, "signature cannot be null");
+        Objects.requireNonNull(traceContext, "traceContext cannot be null");
 
         if (attempts < 0) {
             throw new IllegalArgumentException("attempts cannot be negative");
@@ -81,7 +85,7 @@ public record OutboxEvent(
                                      Instant occurredAt, Instant createdAt) {
         return new OutboxEvent(eventId, topic, tenantId, aggregateType, aggregateId, payload,
             occurredAt, createdAt, 0, Optional.empty(), Optional.empty(), Optional.empty(),
-            Optional.empty());
+            Optional.empty(), TraceContext.NONE);
     }
 
     /** True once the event has been delivered successfully. */
@@ -105,7 +109,8 @@ public record OutboxEvent(
     /** Records a successful delivery. */
     public OutboxEvent delivered(Instant at) {
         return new OutboxEvent(eventId, topic, tenantId, aggregateType, aggregateId, payload,
-            occurredAt, createdAt, attempts, Optional.empty(), Optional.empty(), Optional.of(at), signature);
+            occurredAt, createdAt, attempts, Optional.empty(), Optional.empty(), Optional.of(at),
+            signature, traceContext);
     }
 
     /**
@@ -121,13 +126,46 @@ public record OutboxEvent(
         return new OutboxEvent(eventId, topic, tenantId, aggregateType, aggregateId, payload,
             occurredAt, createdAt, attemptsAfterThisFailure,
             exhausted ? Optional.empty() : Optional.of(nextAt),
-            Optional.of(error), Optional.empty(), signature);
+            Optional.of(error), Optional.empty(), signature, traceContext);
     }
 
     /** Returns a copy carrying an HMAC signature over the payload. */
     public OutboxEvent signed(String hmac) {
         return new OutboxEvent(eventId, topic, tenantId, aggregateType, aggregateId, payload,
             occurredAt, createdAt, attempts, nextAttemptAt, lastError, deliveredAt,
-            Optional.of(hmac));
+            Optional.of(hmac), traceContext);
+    }
+
+    /**
+     * Returns a copy carrying exactly {@code context}.
+     *
+     * <p>Used by the repositories at enqueue time. Note the asymmetry that makes the outbox correct:
+     * stamping happens once, when the event is queued inside the transaction that caused it, and
+     * never again on a delivery pass. Re-reading the trace at dispatch would replace the link to
+     * the request that made the state change with a link to the dispatcher's own poll loop, which
+     * is not an association anyone would ask for.</p>
+     */
+    public OutboxEvent withTraceContext(TraceContext context) {
+        Objects.requireNonNull(context, "context cannot be null");
+        return new OutboxEvent(eventId, topic, tenantId, aggregateType, aggregateId, payload,
+            occurredAt, createdAt, attempts, nextAttemptAt, lastError, deliveredAt, signature, context);
+    }
+
+    /**
+     * Whether {@code other} is the same event, ignoring where either was queued from.
+     *
+     * <p>Trace context is deliberately excluded, and it has to be. A retried transaction re-writes
+     * the same event id, and that retry may run on a thread with no trace active — or under a
+     * different one. Comparing the trace context as content would refuse the second write as a
+     * conflict, turning a harmless retry into a failure inside the caller's transaction. It would
+     * also be conceptually wrong: {@code traceparent} records which request caused an event, not
+     * what the event is, so two writes that differ only in it are the same event.</p>
+     *
+     * <p>This is why the JDBC adapter's conflict check compares {@code payload} and {@code topic}
+     * only, and why the in-memory one has to match it rather than comparing whole records.</p>
+     */
+    public boolean hasSameContentAs(OutboxEvent other) {
+        Objects.requireNonNull(other, "other cannot be null");
+        return withTraceContext(TraceContext.NONE).equals(other.withTraceContext(TraceContext.NONE));
     }
 }

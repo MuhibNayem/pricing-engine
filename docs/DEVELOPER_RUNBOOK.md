@@ -328,6 +328,66 @@ The library registers comprehensive **Micrometer Metrics** under the `pricing.en
 | `pricing.engine.meter.aggregations` | Counter | Aggregations computed by `aggregationType`. |
 | `pricing.engine.entitlement.checks` | Counter | Real-time entitlement decisions (`allowed=true/false`). |
 
+### 4.1 Trace propagation across the outbox
+
+Metrics say *how much*. Traces say *why*, and the outbox is exactly where a trace would otherwise die.
+The request that finalised an invoice opens a trace; the event announcing it is written to a table
+and picked up later by a dispatcher, possibly in another process. Context does not cross that hop
+on its own, so `outbox_events` carries the W3C headers on the row and the library stamps them at
+enqueue time, inside the transaction that caused the state change.
+
+Supply a `TraceContextProvider` bean and every queued event starts carrying it:
+
+```java
+@Bean
+TraceContextProvider traceContextProvider() {
+    return () -> {
+        SpanContext span = Span.current().getSpanContext();
+        if (!span.isValid()) {
+            return TraceContext.NONE;
+        }
+        String traceparent = "00-" + span.getTraceId() + "-" + span.getSpanId()
+            + "-" + span.getTraceFlags().asHex();
+        String tracestate = W3CTraceContextPropagator.getInstance()
+            .getTraceState(Span.current()).toString();
+        return new TraceContext(Optional.of(traceparent),
+            tracestate.isEmpty() ? Optional.empty() : Optional.of(tracestate));
+    };
+}
+```
+
+The dispatcher then injects `event.traceContext().asCarrierHeaders()` into whatever it publishes —
+a Kafka record header, a RabbitMQ property, an HTTP header. **This is deliberately the whole SDK-free
+contract.** `pricing-engine-core` has no OpenTelemetry dependency and will not acquire one: the outbox
+never creates a span, it only carries two strings, and the propagation format is a host decision.
+The `traceparent` grammar is validated against [W3C Trace Context](https://www.w3.org/TR/trace-context/)
+§3.2 at construction, so a malformed value is refused where it is created rather than silently
+failing to correlate at the far end of a broker. Absent a provider, behaviour is unchanged: no trace
+is stamped.
+
+### 4.2 Exposing the engine on another transport (gRPC, GraphQL, message consumers)
+
+The REST controllers are an adapter, not the engine. `pricing-engine-core` knows nothing about HTTP;
+it is entered through plain Java calls on the domain model, which is why gRPC is **not** shipped here.
+
+That is a deliberate boundary rather than an omission. A server adapter means picking HTTP/2 and a
+`protoc` build for every consumer, maintaining a second wire contract alongside the REST one
+forever, and — most importantly — choosing the transport on the host's behalf. Most hosts already
+run a mesh, a gateway or a service framework with opinions about this, and a service mesh handles
+gRPC and REST alike. Message transport is the host's job; so is the protobuf schema, because only the
+host knows which parts of the pricing domain cross a service boundary.
+
+What you need is already there:
+
+1. Generate stubs from your own `.proto`.
+2. Map them onto `PricingEngine.evaluate(PricingRequest) -> PricingResult` and the other core
+   entry points, the same way `PricingEngineController` maps DTOs onto the same domain types.
+3. Take an `IdempotencyKeyStore` and an `AdmissionController` in the constructor — the 429/503
+   shedding semantics come free rather than being reimplemented per transport.
+
+Nothing in core needs to change to do this. If it turns out something does, that is a bug in the
+seam and worth reporting rather than a reason to fork.
+
 ---
 
 ## 5. Troubleshooting & Common Operational Errors

@@ -3,6 +3,8 @@ package com.saas.pricing.persistence.jdbc;
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.event.OutboxEvent;
 import com.saas.pricing.core.model.event.OutboxRepository;
+import com.saas.pricing.core.model.event.TraceContext;
+import com.saas.pricing.core.model.event.TraceContextProvider;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,21 +25,29 @@ import java.util.Optional;
 public class JdbcOutboxRepository implements OutboxRepository {
 
     private final JdbcTemplate jdbcTemplate;
+    private final TraceContextProvider traceContexts;
 
     public JdbcOutboxRepository(JdbcTemplate jdbcTemplate) {
+        this(jdbcTemplate, TraceContextProvider.NONE);
+    }
+
+    public JdbcOutboxRepository(JdbcTemplate jdbcTemplate, TraceContextProvider traceContexts) {
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "jdbcTemplate cannot be null");
+        this.traceContexts = Objects.requireNonNull(traceContexts, "traceContexts cannot be null");
     }
 
     private static final String INSERT = """
         INSERT INTO outbox_events (
             event_id, topic, tenant_id, aggregate_type, aggregate_id, payload,
-            occurred_at, created_at, attempts, next_attempt_at, last_error, delivered_at, signature
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            occurred_at, created_at, attempts, next_attempt_at, last_error, delivered_at, signature,
+            traceparent, tracestate
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """;
 
     private static final String SELECT = """
         SELECT event_id, topic, tenant_id, aggregate_type, aggregate_id, payload,
-               occurred_at, created_at, attempts, next_attempt_at, last_error, delivered_at, signature
+               occurred_at, created_at, attempts, next_attempt_at, last_error, delivered_at, signature,
+               traceparent, tracestate
         FROM outbox_events
         """;
 
@@ -56,20 +66,24 @@ public class JdbcOutboxRepository implements OutboxRepository {
     @Transactional
     public void enqueue(OutboxEvent event) {
         Objects.requireNonNull(event, "event cannot be null");
+        // Stamped here, inside the caller's transaction, and only here. recordDelivery deliberately
+        // does not re-read the provider: that would overwrite the link to the request that caused
+        // the state change with a link to the dispatcher's own poll.
+        OutboxEvent stamped = event.withTraceContext(traceContexts.current());
         // INSERT only. Going through the upsert here would UPDATE an existing row, so the
         // duplicate-key path would never fire and a conflicting re-enqueue would silently
         // overwrite the original event instead of being refused.
-        boolean inserted = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () -> insert(event));
+        boolean inserted = JdbcDuplicateGuard.insertOrIgnore(jdbcTemplate, () -> insert(stamped));
         if (inserted) {
             return;
         }
         Integer conflicting = jdbcTemplate.queryForObject("""
             SELECT COUNT(*) FROM outbox_events
             WHERE event_id = ? AND (payload <> ? OR topic <> ?)
-            """, Integer.class, event.eventId(), event.payload(), event.topic());
+            """, Integer.class, stamped.eventId(), stamped.payload(), stamped.topic());
         if (conflicting != null && conflicting > 0) {
             throw new IllegalArgumentException(
-                "Outbox event " + event.eventId() + " already queued with different content");
+                "Outbox event " + stamped.eventId() + " already queued with different content");
         }
     }
 
@@ -94,7 +108,9 @@ public class JdbcOutboxRepository implements OutboxRepository {
             event.nextAttemptAt().map(Timestamp::from).orElse(null),
             event.lastError().orElse(null),
             event.deliveredAt().map(Timestamp::from).orElse(null),
-            event.signature().orElse(null));
+            event.signature().orElse(null),
+            event.traceContext().traceparent().orElse(null),
+            event.traceContext().tracestate().orElse(null));
     }
 
     private void write(OutboxEvent event) {
@@ -164,6 +180,30 @@ public class JdbcOutboxRepository implements OutboxRepository {
             Optional.ofNullable(next).map(Timestamp::toInstant),
             Optional.ofNullable(rs.getString("last_error")),
             Optional.ofNullable(delivered).map(Timestamp::toInstant),
-            Optional.ofNullable(rs.getString("signature")));
+            Optional.ofNullable(rs.getString("signature")),
+            readTraceContext(rs));
+    }
+
+    /**
+     * Rehydrates the stored headers, tolerating rows written before V22 added the columns.
+     *
+     * <p>Re-validated on the way out rather than trusted, because this is a column a database
+     * operator can edit with {@code redis-cli}-style direct access and a malformed value reaching
+     * a propagator would break correlation silently at the far end of a broker. A value that no
+     * longer parses is dropped rather than fatal: losing the trace link is recoverable, refusing
+     * to deliver the billing event is not.</p>
+     */
+    private static TraceContext readTraceContext(java.sql.ResultSet rs) throws java.sql.SQLException {
+        String traceparent = rs.getString("traceparent");
+        String tracestate = rs.getString("tracestate");
+        if (traceparent == null || traceparent.isBlank()) {
+            return TraceContext.NONE;
+        }
+        try {
+            return new TraceContext(Optional.of(traceparent),
+                Optional.ofNullable(tracestate).filter(value -> !value.isBlank()));
+        } catch (IllegalArgumentException e) {
+            return TraceContext.NONE;
+        }
     }
 }

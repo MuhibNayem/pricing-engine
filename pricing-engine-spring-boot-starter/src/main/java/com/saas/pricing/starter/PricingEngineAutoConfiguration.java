@@ -14,6 +14,7 @@ import com.saas.pricing.core.spi.FxRateCache;
 import com.saas.pricing.core.spi.impl.ConcurrentMapFxRateCache;
 import com.saas.pricing.core.spi.EntitlementEventRepository;
 import com.saas.pricing.core.model.event.OutboxRepository;
+import com.saas.pricing.core.model.event.TraceContextProvider;
 import com.saas.pricing.starter.RetentionService;
 import com.saas.pricing.core.spi.CollectionRepository;
 import com.saas.pricing.core.spi.InvoiceRepository;
@@ -449,13 +450,20 @@ public class PricingEngineAutoConfiguration {
     @ConditionalOnMissingBean
     public OutboxRepository outboxRepository(
         PricingEngineProperties properties,
-        @Autowired(required = false) JdbcTemplate jdbcTemplate
+        @Autowired(required = false) JdbcTemplate jdbcTemplate,
+        @Autowired(required = false) TraceContextProvider traceContextProvider
     ) {
+        // Optional and untyped on purpose. The outbox only needs two header strings carried from
+        // enqueue to dispatch, so a host supplies whichever propagation format it already runs
+        // rather than this starter depending on an OpenTelemetry API it would otherwise never use.
+        // Absent means "no trace is stamped", which is exactly the previous behaviour.
+        TraceContextProvider contexts =
+            traceContextProvider == null ? TraceContextProvider.NONE : traceContextProvider;
         if (properties.getPersistenceType() == PricingEngineProperties.PersistenceType.JDBC) {
             requireJdbc(jdbcTemplate, "OutboxRepository");
-            return new com.saas.pricing.persistence.jdbc.JdbcOutboxRepository(jdbcTemplate);
+            return new com.saas.pricing.persistence.jdbc.JdbcOutboxRepository(jdbcTemplate, contexts);
         }
-        return new com.saas.pricing.core.model.event.InMemoryOutboxRepository();
+        return new com.saas.pricing.core.model.event.InMemoryOutboxRepository(contexts);
     }
 
 

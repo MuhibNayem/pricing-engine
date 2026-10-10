@@ -2,6 +2,7 @@ package com.saas.pricing.persistence.jdbc;
 
 import com.saas.pricing.core.model.TenantId;
 import com.saas.pricing.core.model.event.OutboxEvent;
+import com.saas.pricing.core.model.event.TraceContext;
 import com.saas.pricing.persistence.jdbc.JdbcOutboxRepository;
 
 import org.junit.jupiter.api.DisplayName;
@@ -121,5 +122,89 @@ class JdbcOutboxRepositoryTest extends BaseJdbcRepositoryTest {
         assertThat(repo.findUndelivered("invoice.finalized", 100))
             .extracting(OutboxEvent::eventId)
             .contains("e-exhausted");
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Trace context: the point of storing it is that a trace survives the asynchronous hop, so the
+    // assertions are about what a relay would actually find on the row.
+    // -------------------------------------------------------------------------------------------
+
+    private static final String TRACEPARENT = com.saas.pricing.core.model.event.TraceContext.EXAMPLE_TRACEPARENT;
+
+    @Test
+    @DisplayName("the trace an event was queued under survives to the database")
+    void traceContextRoundTrips() {
+        var repo = new JdbcOutboxRepository(jdbcTemplate, () -> TraceContext.of(TRACEPARENT));
+        repo.enqueue(event("e1"));
+
+        var loaded = repo.findDue(T0, 10).getFirst();
+
+        assertThat(loaded.traceContext().traceparent())
+            .as("a relay reading this row has to be able to stitch the consumer's span to the "
+                + "request that changed the billing state")
+            .contains(TRACEPARENT);
+    }
+
+    @Test
+    @DisplayName("tracestate is persisted alongside the traceparent")
+    void tracestateRoundTrips() {
+        var repo = new JdbcOutboxRepository(jdbcTemplate, () -> new TraceContext(
+            java.util.Optional.of(TRACEPARENT), java.util.Optional.of("vendor=abc,other=def")));
+        repo.enqueue(event("e1"));
+
+        var loaded = repo.findDue(T0, 10).getFirst();
+
+        assertThat(loaded.traceContext().tracestate()).contains("vendor=abc,other=def");
+        assertThat(loaded.traceContext().asCarrierHeaders())
+            .containsEntry("traceparent", TRACEPARENT)
+            .containsEntry("tracestate", "vendor=abc,other=def");
+    }
+
+    @Test
+    @DisplayName("rows written before V22 have no trace and still load")
+    void missingColumnsMeanNoTrace() {
+        var repo = repository();
+        repo.enqueue(event("e1"));
+
+        assertThat(repo.findDue(T0, 10).getFirst().traceContext().isPresent())
+            .as("the columns are nullable so pre-existing rows stay valid")
+            .isFalse();
+    }
+
+    /**
+     * The columns are ordinary text a DBA can edit. A value that no longer parses must not stop the
+     * billing event from being delivered — losing the trace link is recoverable, refusing to
+     * publish the invoice is not.
+     */
+    @Test
+    @DisplayName("a hand-edited traceparent is dropped rather than refused")
+    void malformedStoredTraceparentIsDroppedNotFatal() {
+        var repo = new JdbcOutboxRepository(jdbcTemplate, () -> TraceContext.of(TRACEPARENT));
+        repo.enqueue(event("e1"));
+        jdbcTemplate.update("UPDATE outbox_events SET traceparent = ? WHERE event_id = ?",
+            "not-a-traceparent", "e1");
+
+        var loaded = repo.findDue(T0, 10);
+
+        assertThat(loaded).as("the event must still be deliverable").hasSize(1);
+        assertThat(loaded.getFirst().traceContext().isPresent()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a retry on an untraced thread is a duplicate, not a conflict")
+    void traceContextIsNotPartOfTheConflictRule() {
+        var traced = new JdbcOutboxRepository(jdbcTemplate, () -> TraceContext.of(TRACEPARENT));
+        traced.enqueue(event("e1"));
+
+        // Same transaction retried from a thread with no trace active.
+        new JdbcOutboxRepository(jdbcTemplate).enqueue(event("e1"));
+
+        assertThat(traced.findByTenant(TenantId.of("t1"), 10))
+            .as("the conflict check compares payload and topic only, exactly as it did before "
+                + "trace context existed")
+            .hasSize(1);
+        assertThat(traced.findDue(T0, 10).getFirst().traceContext().traceparent())
+            .as("the original cause is kept, not downgraded by the retry")
+            .contains(TRACEPARENT);
     }
 }

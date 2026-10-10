@@ -20,14 +20,33 @@ import java.util.concurrent.ConcurrentHashMap;
 public class InMemoryOutboxRepository implements OutboxRepository {
 
     private final Map<String, OutboxEvent> events = new ConcurrentHashMap<>();
+    private final TraceContextProvider traceContexts;
 
+    public InMemoryOutboxRepository() {
+        this(TraceContextProvider.NONE);
+    }
+
+    public InMemoryOutboxRepository(TraceContextProvider traceContexts) {
+        this.traceContexts = Objects.requireNonNull(traceContexts, "traceContexts cannot be null");
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Stamps the current trace context onto the event, inside the caller's transaction, so the
+     * trace that caused the state change survives the hop to whoever delivers the event. Mirrors
+     * {@code JdbcOutboxRepository} exactly: same seam, same asymmetry.</p>
+     */
     @Override
     public void enqueue(OutboxEvent event) {
         Objects.requireNonNull(event, "event cannot be null");
-        var existing = events.putIfAbsent(event.eventId(), event);
-        if (existing != null && !existing.equals(event)) {
+        var stamped = event.withTraceContext(traceContexts.current());
+        var existing = events.putIfAbsent(stamped.eventId(), stamped);
+        if (existing != null && !existing.hasSameContentAs(stamped)) {
+            // hasSameContentAs, not equals: a retried transaction re-writing the same id may carry
+            // a different trace, or none, and that is the same event rather than a conflict.
             throw new IllegalArgumentException(
-                "Outbox event " + event.eventId() + " already queued with different content");
+                "Outbox event " + stamped.eventId() + " already queued with different content");
         }
     }
 
