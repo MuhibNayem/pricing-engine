@@ -169,7 +169,7 @@ ul.cross li::before{border-color:var(--rose)}
     <div class="statrow">
       <div class="stat"><div class="n">0</div><div class="l">runtime dependencies in <code>core</code></div></div>
       <div class="stat"><div class="n">26</div><div class="l">SPI seams, each with in-memory + JDBC impls</div></div>
-      <div class="stat"><div class="n">735</div><div class="l">tests passing across 5 modules</div></div>
+      <div class="stat"><div class="n">878</div><div class="l">tests passing across 6 modules</div></div>
       <div class="stat"><div class="n">21</div><div class="l">migrations, 7 with Postgres immutability triggers</div></div>
     </div>
   </header>
@@ -382,13 +382,14 @@ ul.cross li::before{border-color:var(--rose)}
 
     <div class="grid-7-5" style="margin-top:26px">
       <div class="card">
-        <h3>735 tests, 0 failures</h3>
-        <p style="font-size:13.5px;color:var(--muted);margin:6px 0 16px">Distribution across the five reactor modules.</p>
-        <div class="bench"><span class="bench-label">core</span><div class="bench-track"><div class="bench-fill" style="width:100%"></div></div><span class="bench-val">336</span></div>
-        <div class="bench"><span class="bench-label">starter</span><div class="bench-track"><div class="bench-fill" style="width:49%"></div></div><span class="bench-val">165</span></div>
-        <div class="bench"><span class="bench-label">persistence</span><div class="bench-track"><div class="bench-fill" style="width:34%"></div></div><span class="bench-val">113</span></div>
-        <div class="bench"><span class="bench-label">metering</span><div class="bench-track"><div class="bench-fill" style="width:21%"></div></div><span class="bench-val">71</span></div>
-        <div class="bench"><span class="bench-label">evaluator</span><div class="bench-track"><div class="bench-fill" style="width:15%"></div></div><span class="bench-val">50</span></div>
+        <h3>878 tests, 0 failures</h3>
+        <p style="font-size:13.5px;color:var(--muted);margin:6px 0 16px">Distribution across the six reactor modules.</p>
+        <div class="bench"><span class="bench-label">core</span><div class="bench-track"><div class="bench-fill" style="width:100%"></div></div><span class="bench-val">382</span></div>
+        <div class="bench"><span class="bench-label">starter</span><div class="bench-track"><div class="bench-fill" style="width:47%"></div></div><span class="bench-val">179</span></div>
+        <div class="bench"><span class="bench-label">persistence</span><div class="bench-track"><div class="bench-fill" style="width:33%"></div></div><span class="bench-val">125</span></div>
+        <div class="bench"><span class="bench-label">metering</span><div class="bench-track"><div class="bench-fill" style="width:22%"></div></div><span class="bench-val">84</span></div>
+        <div class="bench"><span class="bench-label">redis (optional)</span><div class="bench-track"><div class="bench-fill" style="width:15%"></div></div><span class="bench-val">58</span></div>
+        <div class="bench"><span class="bench-label">evaluator</span><div class="bench-track"><div class="bench-fill" style="width:13%"></div></div><span class="bench-val">50</span></div>
         <p class="footnote">17,589 lines of test code against 24,834 lines of production code. Tests are roughly 0.7× the size of the thing they test.</p>
       </div>
 
@@ -425,8 +426,8 @@ ul.cross li::before{border-color:var(--rose)}
       <div class="card">
         <h3>Genuinely open</h3>
         <ul class="ticks" style="margin-top:14px">
-          <li><b>Rate limiting and quotas.</b> No 429 path, no per-tenant ceiling. The parity report marks this <b>PARTIAL</b>, not parity.</li>
-          <li><b>Load shedding and SLO reporting.</b> No p99 instrumentation, no correctness SLI, no backoff. Also marked <b>PARTIAL</b>.</li>
+          <li><b>Rate limiting and quotas — now closed, but not by this document.</b> <code>AdmissionController</code> (token bucket + concurrency ceiling, 429/503 with <code>Retry-After</code>) and the optional Redis adapter sharing a quota across nodes. The parity report now marks C5 <b>PARITY</b>; this walkthrough predates it.</li>
+          <li><b>Load shedding and SLO reporting.</b> Shedding is present; <b>p99 reporting and a correctness SLI are not</b>, so C6 stays <b>PARTIAL</b>.</li>
           <li><b>Identifier validation.</b> <code>TenantId</code> and <code>CustomerId</code> reject only null and blank. Harmless now that keying is structural; still worth tightening deliberately.</li>
         </ul>
       </div>

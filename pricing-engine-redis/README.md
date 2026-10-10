@@ -74,12 +74,12 @@ Every implementation must pass the same assertions as its in-memory counterpart:
 | Suite | In-memory | Redis |
 |---|---|---|
 | `IdempotencyKeyStoreConformance` | 9 | 9 |
-| `RatingClaimStoreConformance` | 9 | 10 |
-| `AdmissionControllerConformance` | 6 | 8 |
+| `RatingClaimStoreConformance` | 9 | 12 |
+| `AdmissionControllerConformance` | 7 | 12 |
 
 Adding a store means adding a subclass, not writing its own idea of what a claim is.
 
-That approach earned its keep repeatedly. The Redis adapters shipped four defects that a mocked
+That approach earned its keep repeatedly. The Redis adapters shipped six defects that a mocked
 Redis would never have surfaced:
 
 1. **`redis.call('HMGET', …)` returns ONE nested table**, not six values. Multiple assignment bound
@@ -95,6 +95,26 @@ Redis would never have surfaced:
    slowly, which is indistinguishable from "the limiter stopped working after a pause". The
    distributed limiter now refills continuously, matching the in-memory one exactly — Redis's own
    Java guide refills on discrete intervals, which would have made the two silently disagree.
+5. **The shared bucket was stamped with `System.nanoTime()`.** A monotonic *duration* with an
+   arbitrary per-JVM origin is not something another node can read: two pods a day apart in uptime
+   disagree by 86,400,000, and either direction is enough to rewind the bucket to full burst. The
+   script now sources its instant from `redis.call('TIME')`, which makes cross-node skew
+   structurally impossible rather than clamped. The `Clock` constructor is a test seam for the
+   conformance suite — passing a per-process clock there reintroduces exactly this bug.
+6. **A concurrency shed spent a token out of the shared quota.** The in-memory controller refunded
+   it; the Redis one did not, so a node that was merely saturated drained its tenants' cluster-wide
+   quota with 503s it had no right to spend. Found by the shared conformance suite, which is the
+   only reason it was ever noticed — `concurrencyShedRefundsTheRateToken` read 3 where the
+   in-memory implementation read 4.
+
+### Reads and writes must each be one indivisible step
+
+`RatingClaimStore.record` used to issue three `HSET`s and a `PEXPIRE` as four round trips. Each
+command is atomic, so a reader never sees a half-executed *command* — but nothing stopped it
+seeing a half-written *claim*, and a `compareAndSet` landing between field one and field three read
+one writer's amount with another's timestamp and swapped against a mixture that never existed.
+`record` is now a single script. `recordIsASingleAtomicRoundTrip` counts the commands so the fix
+cannot silently regress into a round trip again.
 
 ## Also read
 

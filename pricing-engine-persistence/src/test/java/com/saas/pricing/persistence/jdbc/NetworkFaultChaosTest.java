@@ -94,9 +94,18 @@ class NetworkFaultChaosTest {
             + "/" + POSTGRES.getDatabaseName());
         ds.setUsername(POSTGRES.getUsername());
         ds.setPassword(POSTGRES.getPassword());
-        // connectTimeout only. A global socketTimeout here would put every test on a 5s leash and
-        // let one test's injected latency fail the next; the latency test sets its own deadline.
-        ds.setUrl(ds.getUrl() + "?connectTimeout=5");
+        // connectTimeout alone is not enough, and the reason is worth recording. Toxiproxy keeps
+        // accepting TCP connections when the link is cut, so the TCP handshake succeeds and the
+        // driver's connectTimeout never fires. The driver then blocks reading the server's startup
+        // packet, which is a *read* with no deadline, so the OS TCP timeout is what finally ends it -
+        // measured at 165s on this machine. A suite whose failure mode is a three-minute hang is a
+        // suite people disable, so socketTimeout bounds it too.
+        //
+        // 10s is chosen against this class's actual statements: every probe here completes in single-
+        // digit milliseconds on a healthy network and the only deliberately slow one is the 1.5s
+        // latency toxic. It is a bound, not a target, and the DataSource is private to this class, so
+        // it cannot leak a deadline onto any other test.
+        ds.setUrl(ds.getUrl() + "?connectTimeout=5&socketTimeout=10");
 
         dataSource = ds;
         jdbc = new JdbcTemplate(ds);
@@ -104,6 +113,15 @@ class NetworkFaultChaosTest {
 
         Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
     }
+
+    /**
+     * Ceiling on how long any injected network fault may take to surface.
+     *
+     * <p>Ten times the configured socketTimeout, so a machine slower than this one still passes while
+     * a regression back to unbounded blocking - the 165s behaviour - fails loudly and quickly instead
+     * of quietly consuming the build.</p>
+     */
+    private static final long MAX_FAULT_SURFACE_MILLIS = 100_000L;
 
     @BeforeEach
     void restoreNetwork() throws Exception {
@@ -135,12 +153,38 @@ class NetworkFaultChaosTest {
 
         // The dangerous failure mode is the opposite of this one: the server commits, the socket
         // dies before the client sees the acknowledgement, and the code concludes "it worked".
+        long start = System.nanoTime();
         assertThatThrownBy(() -> jdbc.update(
                 "INSERT INTO idempotency_keys (tenant_id, idem_key, fingerprint, status, recorded_at, expires_at) "
                     + "VALUES (?, ?, ?, 'IN_FLIGHT', ?, ?)",
                 "acme", key, "fp", T0, T1))
             .as("a cut connection must surface as a failure to the caller")
             .isInstanceOf(DataAccessException.class);
+
+        // The connection is cut at the proxy, which still completes the TCP handshake, so this
+        // blocks in the driver's startup read rather than in connect. Assert the deadline holds: a
+        // test that hangs for three minutes is worse than no test, because it trains people to
+        // disable the suite it belongs to.
+        assertThat((System.nanoTime() - start) / 1_000_000L)
+            .as("a severed connection must surface promptly, not after the OS TCP timeout")
+            .isLessThan(MAX_FAULT_SURFACE_MILLIS);
+    }
+
+    @Test
+    @DisplayName("a connection cut mid-handshake is bounded, not left to the OS")
+    void severedConnectionDoesNotHangOnAuthentication() {
+        // The specific shape that cost 165s: a fresh connection whose peer accepts TCP and then says
+        // nothing. Without a read deadline the driver waits on the kernel, not on anything this
+        // suite controls, so the failure lands minutes later and on a schedule nobody chose.
+        proxy.setConnectionCut(true);
+
+        long start = System.nanoTime();
+        assertThatThrownBy(() -> jdbc.queryForObject("SELECT 1", Integer.class))
+            .isInstanceOf(DataAccessException.class);
+
+        assertThat((System.nanoTime() - start) / 1_000_000L)
+            .as("the socket timeout must bound this; the OS TCP timeout must not")
+            .isLessThan(MAX_FAULT_SURFACE_MILLIS);
     }
 
     @Test

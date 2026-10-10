@@ -52,6 +52,32 @@ public class RedisRatingClaimStore implements RatingClaimStore {
     private static final String KEY_PREFIX = "aequitas:claim:";
 
     /**
+     * Unconditional write, atomic on the server.
+     *
+     * <p>{@code KEYS[1]} claim key. {@code ARGV[1]} amount, {@code ARGV[2]} currency,
+     * {@code ARGV[3]} chargedAt, {@code ARGV[4]} ttl millis.</p>
+     *
+     * <p>Exists because the obvious implementation is wrong in a way that only shows up under load:
+     * three {@code HSET}s and a {@code PEXPIRE} as four separate round trips. Redis runs each command
+     * atomically, so a reader cannot observe a half-written <em>command</em> — but nothing stops it
+     * from observing a half-written <em>claim</em>. A {@code compareAndSet} landing between field one
+     * and field three reads a claim with the new amount and the old timestamp, concludes it is the
+     * claim it expected to replace, and swaps against a mixture that never existed. On a drawdown
+     * claim that is money charged against a fabricated figure.</p>
+     *
+     * <p>The same four commands pipelined would be atomic to other clients on a single connection and
+     * still not atomic to a <em>different</em> connection — pipelining orders your commands, not
+     * anyone's else. Only a script closes that window.</p>
+     */
+    private static final String RECORD_LUA = """
+        redis.call('HSET', KEYS[1], 'amount', ARGV[1], 'currency', ARGV[2], 'charged_at', ARGV[3])
+        -- Relative, not PEXPIREAT: the physical key lifetime is retention only. Correctness comes
+        -- from the stored value, and a claim past its TTL is correctly absent rather than wrong.
+        redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[4]))
+        return 1
+        """;
+
+    /**
      * Compare-and-set. {@code KEYS[1]} claim key. {@code ARGV[1]} expected amount, or the empty
      * string to mean "expected absent". {@code ARGV[2]} expected currency, {@code ARGV[3]} expected
      * chargedAt, {@code ARGV[4]} updated amount, {@code ARGV[5]} updated currency,
@@ -148,10 +174,12 @@ public class RedisRatingClaimStore implements RatingClaimStore {
         Objects.requireNonNull(charged, "charged cannot be null");
         String key = redisKey(tenantId, claimKey);
         try {
-            commands.hset(key, "amount", normalise(charged.amount()));
-            commands.hset(key, "currency", charged.currency());
-            commands.hset(key, "charged_at", charged.chargedAt().toString());
-            commands.pexpire(key, Math.max(1L, ttl.toMillis()));
+            // One round trip, one atomic unit: see RECORD_LUA for what four separate commands cost.
+            commands.eval(RECORD_LUA, ScriptOutputType.INTEGER, new String[]{key},
+                normalise(charged.amount()),
+                charged.currency(),
+                charged.chargedAt().toString(),
+                Long.toString(Math.max(1L, ttl.toMillis())));
         } catch (RedisException e) {
             throw unavailable("recording a claim", e);
         }

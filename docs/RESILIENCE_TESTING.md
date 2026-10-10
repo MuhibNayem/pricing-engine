@@ -192,11 +192,18 @@ Stated plainly, because this is the part that gets skipped in a status update.
    is tidier than a network that misbehaves, and a repository that surfaces a socket error is a
    polite subset of what reaches production.
 
-2. **No deadline-enforcement test.** The latency case proves the injected delay is *observable*,
-   not that anything *acts* on it. Whether a hung database trips a caller in bounded time depends
-   on your pool configuration, the driver's `socketTimeout`, and the gateway's timeouts — none of
-   which this library owns or configures. That is a deliberate boundary and it is also a real gap in
-   what has been verified.
+2. **No deadline-enforcement test for the engine itself.** The latency case proves the injected delay
+   is *observable*, not that anything *acts* on it. Whether a hung database trips a caller in
+   bounded time depends on your pool configuration, the driver's `socketTimeout`, and the gateway's
+   timeouts — none of which this library owns or configures. That is a deliberate boundary and it is
+   also a real gap in what has been verified.
+
+   The test harness, by contrast, *is* bounded and now proves it. Toxiproxy still completes the TCP
+   handshake when the link is cut, so `connectTimeout` alone never fires and the driver blocks in its
+   startup read until the OS TCP timeout — measured at **165 s** before this was fixed. `socketTimeout`
+   now bounds it, and `severedConnectionDoesNotHangOnAuthentication` asserts the bound holds, so a
+   regression back to unbounded blocking fails in seconds rather than quietly eating the build.
+   Measured after the fix: 15.0 s and 5.1 s on the two paths that used to stall, class total 40.6 s.
 
 3. **Clock injection stops at the store.** The soak advances a `Clock` the stores were handed. It
    says nothing about NTP drift, a leap second, or a clock that jumps backwards on the host, and
@@ -229,7 +236,11 @@ All three are now closed:
    execute what it can execute and a shared ceiling would let one node's load consume another's
    headroom. Refills continuously so it admits the same requests for the same instants as the
    in-memory limiter — Redis's own Java guide refills on discrete intervals, which would have made
-   the two silently disagree at the margin.
+   the two silently disagree at the margin. The bucket is stamped with **`redis.call('TIME')`**, not
+   with the caller's clock: the bucket is read by every node, so its timestamp has to be in a domain
+   all of them can interpret, and cross-node skew is now structurally impossible rather than clamped.
+   A concurrency shed **returns the token it consumed**, because the quota is shared and the ceiling
+   is local — otherwise a saturated node would spend permits no other node ever refused.
 2. **Adaptive load shedding — `AdaptiveAdmissionController`.** Replaces the fixed ceiling with one
    derived from measured latency. Not AIMD: a pricing engine returns 422 for a bad rate card and
    409 for a duplicate key, and neither means "at capacity", so a failure-count controller would
@@ -238,7 +249,7 @@ All three are now closed:
    artifact. The aggregate lists 80 components; `pricing-engine-core` lists **zero**, which is the
    "no runtime dependencies" claim in machine-readable form rather than a sentence in a README.
 
-## Two findings worth recording
+## Four findings worth recording
 
 **Vegas was the wrong algorithm, and a test proved it.** The first implementation used Netflix's
 Vegas queue estimate, which resets its minimum round-trip whenever the limit grows. That reset is
@@ -255,3 +266,21 @@ in Lua produces an *integer* reply, which Lettuce decodes as `Long`, not `String
 `"0".equals(result.get(0))` check therefore never matched, so every shed was read as an admission —
 the rate limiter permitted everything, silently. Quoted strings (`{'0', …}`) fix it. Neither a
 mocked Redis nor a unit test of the Java side would have found this.
+
+**The same suite caught the two limiters disagreeing about a shared token.** The in-memory
+controller refunded a rate token when the concurrency ceiling rejected a request; the Redis one
+consumed it and never gave it back. A node that was merely saturated therefore drained its tenants'
+*cluster-wide* quota — repeated 503s spending permits that no other node ever refused — so a tenant
+ended up rate limited by a machine that was not the one turning it away. `concurrencyShedRefundsTheRateToken`
+asserts the exact remaining count; against the unfixed Redis implementation it reads **3 where the
+in-memory one reads 4**. That gap is the entire reason the shared suite exists: neither
+implementation was wrong on its own terms, and only running both against one contract found it.
+
+**A shared bucket stamped with `System.nanoTime()` is a limiter whose behaviour depends on pod
+uptime.** `nanoTime` is a monotonic *duration* with an arbitrary per-JVM origin, so dividing it by a
+million to get "millis" produces a number other nodes cannot interpret. Two pods a day apart in
+uptime disagree by 86,400,000; a pod an hour out by NTP disagrees by 3,600,000. Either is enough to
+rewind a shared bucket to full burst, and the limiter's real rate becomes a function of which pod
+the load balancer picked. `bucketTimestampIsServerEpochMillis` pins the domain — epoch millis and
+uptime cannot be confused, since a machine would have to have been up for ~56 years to collide — so
+it fails deterministically if the domain ever regresses.

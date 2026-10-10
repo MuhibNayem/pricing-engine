@@ -21,7 +21,12 @@ class InMemoryAdmissionControllerConformanceTest extends AdmissionControllerConf
     protected AdmissionController controller(ManualClock clock) {
         // Burst 5, refill 5/second, concurrency ceiling far above the burst so these tests measure
         // rate behaviour only. The ceiling has its own dedicated suite in core.
-        return new TokenBucketAdmissionController(5, Duration.ofSeconds(1), 5, 1_000_000,
+        return controller(clock, 1_000_000);
+    }
+
+    @Override
+    protected AdmissionController controller(ManualClock clock, int maxConcurrency) {
+        return new TokenBucketAdmissionController(5, Duration.ofSeconds(1), 5, maxConcurrency,
             1_000, Duration.ofMillis(50), clock::nanos);
     }
 }
