@@ -222,15 +222,36 @@ The three items that used to head this list are now done:
 3. ~~A rate limiter~~ — `AdmissionController` with a per-tenant token bucket and a concurrency
    ceiling, mapped to 429/503 with `Retry-After`.
 
-What remains open:
+All three are now closed:
 
-1. **Distributed rate limiting.** `TokenBucketAdmissionController` is per-process. Behind N load
-   balancers the effective per-tenant rate is N times the configured one. The SPI is the seam —
-   a Redis- or Postgres-backed implementation is a host decision — but the reference
-   implementation is single-node, and the documentation says so.
-2. **Adaptive load shedding.** The ceiling is a configured constant, not a function of measured
-   latency or queue depth. Netflix's `concurrency-limits` and an adaptive limit would track
-   saturation rather than assume it.
-3. **SBOM and supply-chain attestation.**
+1. **Distributed rate limiting — `RedisAdmissionController`.** The per-tenant *quota* is shared
+   across nodes; the *concurrency ceiling* deliberately stays local, because a node can only
+   execute what it can execute and a shared ceiling would let one node's load consume another's
+   headroom. Refills continuously so it admits the same requests for the same instants as the
+   in-memory limiter — Redis's own Java guide refills on discrete intervals, which would have made
+   the two silently disagree at the margin.
+2. **Adaptive load shedding — `AdaptiveAdmissionController`.** Replaces the fixed ceiling with one
+   derived from measured latency. Not AIMD: a pricing engine returns 422 for a bad rate card and
+   409 for a duplicate key, and neither means "at capacity", so a failure-count controller would
+   collapse its own limit during healthy traffic. Not Vegas either — see below.
+3. **SBOM — CycloneDX.** `makeAggregateBom` runs at `package` and attaches the BOM to every
+   artifact. The aggregate lists 80 components; `pricing-engine-core` lists **zero**, which is the
+   "no runtime dependencies" claim in machine-readable form rather than a sentence in a README.
 
-None of the three changes production code. All three change what we can honestly claim.
+## Two findings worth recording
+
+**Vegas was the wrong algorithm, and a test proved it.** The first implementation used Netflix's
+Vegas queue estimate, which resets its minimum round-trip whenever the limit grows. That reset is
+fatal in a way that is easy to miss: grow the limit, reset, then sample latency that has *already*
+inflated — and the inflated value becomes the new "no load" baseline. Every subsequent comparison is
+against the degraded latency, so the queue estimate is permanently zero and the limit climbs until
+something breaks. Measured against a 1 ms baseline followed by sustained 500 ms requests, Vegas
+never reduced the ceiling at all. Gradient2 is designed for exactly this ("bias and drift when
+using minimum latency measurements") and uses divergence between two exponential averages, with a
+baseline that is never reset.
+
+**The conformance suite caught a Lua reply-type bug that made the limiter a no-op.** `return {0, …}`
+in Lua produces an *integer* reply, which Lettuce decodes as `Long`, not `String`. The client's
+`"0".equals(result.get(0))` check therefore never matched, so every shed was read as an admission —
+the rate limiter permitted everything, silently. Quoted strings (`{'0', …}`) fix it. Neither a
+mocked Redis nor a unit test of the Java side would have found this.

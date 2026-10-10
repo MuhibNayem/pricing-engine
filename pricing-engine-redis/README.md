@@ -1,7 +1,7 @@
 # pricing-engine-redis
 
-Optional Redis-backed `IdempotencyKeyStore`, for a host that already runs Redis and wants
-sub-millisecond deduplication in front of PostgreSQL.
+Optional Redis implementations for a host that already runs Redis: a deduplication fast path for
+HTTP idempotency keys, a rating-window claim store, and a cluster-wide rate limiter.
 
 **Nothing else in the library depends on this module.** If you do not declare it, Redis never
 appears on your classpath and this code never runs.
@@ -15,9 +15,17 @@ appears on your classpath and this code never runs.
 ```
 
 ```java
-@Bean
-IdempotencyKeyStore idempotencyKeyStore(RedisCommands<String, String> commands) {
-    return new RedisIdempotencyKeyStore(commands);
+@Bean IdempotencyKeyStore idempotencyKeys(RedisCommands<String, String> c) {
+    return new RedisIdempotencyKeyStore(c);
+}
+
+@Bean RatingClaimStore ratingClaims(StatefulRedisConnection<String, String> c) {
+    return new RedisRatingClaimStore(c);
+}
+
+@Bean AdmissionController admission(StatefulRedisConnection<String, String> c) {
+    // Shared per-tenant quota, local concurrency ceiling.
+    return new RedisAdmissionController(c, 1_000, Duration.ofSeconds(1), 1_000, 256);
 }
 ```
 
@@ -30,44 +38,65 @@ the thing that decides whether money moves twice.
 
 If you are using the JDBC store today, adding this changes latency, not authority.
 
-## What it does that `SET NX` does not
+## What is here, and what it does not use `SET NX` for
 
-`decide` has four outcomes — proceed, replay, in-flight, conflict — and choosing between them
-depends on state a single `SET NX` cannot see: whether the record is still live, whether it
-completed, and whether its fingerprint matches. Read-then-write is a race: two callers both see an
-absent key and both proceed, which is exactly what idempotency exists to prevent. The decision runs
-as a Lua script, which executes atomically server-side.
+| Class | Why it needs Lua |
+|---|---|
+| `RedisIdempotencyKeyStore` | `decide` has four outcomes chosen by state `SET NX` cannot see — is the record live, did it complete, does the fingerprint match. |
+| `RedisRatingClaimStore` | `compareAndSet` compares against a *value*, not against absence. This is the method that stops a window being charged twice. |
+| `RedisAdmissionController` | Refill, check and decrement must be one indivisible step, or two nodes both grant a token that only exists once. |
 
 Keys carry a Redis Cluster hash tag (`{tenantId}`), so a tenant's records stay in one slot and the
-multi-key script remains legal under Cluster.
+multi-key scripts remain legal under Cluster.
+
+## Which limit is shared, and why only that one
+
+The per-tenant **quota** is shared: it is a statement about the tenant's entitlement, and a tenant
+cannot hold one per node.
+
+The **concurrency ceiling** stays local. It models what *this node* can execute — cores, a
+connection pool, a thread budget — none of which is global. Sharing it would be wrong in both
+directions: a remote node cannot do this node's work, and a shared ceiling would let one node's
+silently consume another's headroom.
 
 ## Fail-closed by default
 
-If Redis is unreachable, this throws `IdempotencyKeyStoreUnavailableException` rather than
-proceeding. Proceeding is the tempting choice — it keeps the endpoint available — and it is the
-wrong one: a deduplication layer that fails open silently re-enables the double charge it exists to
-prevent. Catching that exception and proceeding anyway is possible, and is a business decision
-about double-charging rather than a configuration detail.
+If Redis is unreachable, these throw `IdempotencyKeyStoreUnavailableException` rather than
+reporting an absent claim or an open quota. Reporting absence would tell a caller it may charge a
+window that was already charged; serving a request would silently serve a tenant whose quota is
+exhausted. Catching that exception and proceeding is possible, and is a business decision about
+double-charging rather than a configuration detail.
 
 ## Conformance
 
-Both implementations run the same nine assertions in `IdempotencyKeyStoreConformance` — the
-in-memory one and this one. Adding a store means adding a subclass, not writing its own idea of
-what a claim is.
+Every implementation must pass the same assertions as its in-memory counterpart:
 
-That suite earned its keep immediately. It caught two defects in this adapter that a mocked Redis
-would never have surfaced:
+| Suite | In-memory | Redis |
+|---|---|---|
+| `IdempotencyKeyStoreConformance` | 9 | 9 |
+| `RatingClaimStoreConformance` | 9 | 10 |
+| `AdmissionControllerConformance` | 6 | 8 |
 
-1. `redis.call('HMGET', ...)` returns **one nested table**, not six values. Multiple assignment
-   bound the first name to the whole table, so every request answered `CONFLICT`/422 and nothing
-   was ever stored.
-2. `PEXPIREAT` is interpreted against **Redis's** clock while the record's expiry lives in the
-   caller's. Any disagreement between the two evicted the record immediately. The script now uses a
-   relative `PEXPIRE`, so logical expiry stays in the caller's domain — the correctness authority —
-   and physical eviction is memory hygiene.
+Adding a store means adding a subclass, not writing its own idea of what a claim is.
+
+That approach earned its keep repeatedly. The Redis adapters shipped four defects that a mocked
+Redis would never have surfaced:
+
+1. **`redis.call('HMGET', …)` returns ONE nested table**, not six values. Multiple assignment bound
+   the first name to the whole table — always truthy, never equal to a fingerprint — so every
+   request answered `CONFLICT`/422 and nothing was ever stored.
+2. **`PEXPIREAT` is absolute against Redis's clock** while the record's expiry lives in the
+   caller's. Any disagreement evicted the record immediately, so every second call saw an absent
+   key. Now a relative `PEXPIRE`.
+3. **`return {0, …}` in Lua is an integer reply**, which Lettuce decodes as `Long`, not `String`.
+   The `"0".equals(...)` check never matched, so the rate limiter read every shed as an admission
+   and permitted everything — a limiter that was a silent no-op. Quoted strings fix it.
+4. **A per-nanosecond rate multiplied by a millisecond elapsed time** refills a millionfold too
+   slowly, which is indistinguishable from "the limiter stopped working after a pause". The
+   distributed limiter now refills continuously, matching the in-memory one exactly — Redis's own
+   Java guide refills on discrete intervals, which would have made the two silently disagree.
 
 ## Also read
 
-`RedisIdempotencyKeyStore` covers `IdempotencyKeyStore`. `RatingClaimStore` still ships as
-in-memory and JDBC implementations only; adding a Redis one means implementing `compareAndSet`
-atomically, which `SET NX` cannot express either.
+`PricingEngineProperties.admission` covers the fixed and adaptive ceilings; see
+[the runbook](../docs/DEVELOPER_RUNBOOK.md) for the operational view.

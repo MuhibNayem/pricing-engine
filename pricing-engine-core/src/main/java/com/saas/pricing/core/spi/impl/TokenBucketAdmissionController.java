@@ -12,6 +12,9 @@ import java.util.function.LongSupplier;
 /**
  * Lock-free token-bucket rate limiting plus an in-flight concurrency ceiling.
  *
+ * <p>Not final: {@link AdaptiveAdmissionController} subclasses this to replace the fixed ceiling
+ * with a Vegas-adapted one, reusing the bucket rather than duplicating it.</p>
+ *
  * <p>Token bucket rather than a fixed window because a fixed window admits twice the intended rate
  * across a window boundary — a burst exactly at the edge passes unthrottled — and because bucket
  * state is O(1) per tenant regardless of request rate. Bucket4j describes token bucket as "the
@@ -28,7 +31,7 @@ import java.util.function.LongSupplier;
  * <p>Starts no threads and holds no timers: the bucket refills arithmetically against an injected
  * time source, so there is nothing to schedule and nothing to shut down.</p>
  */
-public final class TokenBucketAdmissionController implements AdmissionController {
+public class TokenBucketAdmissionController implements AdmissionController {
 
     /** Default ceiling on distinct tenants tracked before idle buckets are reclaimed. */
     public static final int DEFAULT_MAX_TRACKED_TENANTS = 10_000;
@@ -104,12 +107,37 @@ public final class TokenBucketAdmissionController implements AdmissionController
         }
 
         // Rate passed. Take a concurrency slot, or give the token back and shed.
-        if (inFlight.incrementAndGet() > maxConcurrency) {
+        return grantLease(tenantId.value(), now);
+    }
+
+    /**
+     * Takes an in-flight slot and returns the lease that releases it, recording how long the work
+     * took so a subclass can adapt.
+     *
+     * <p>Separated from {@link #admit} so {@link AdaptiveAdmissionController} can reuse the entire
+     * rate path and override only this decision, instead of reimplementing — and re-bugging — the
+     * token bucket.</p>
+     */
+    protected Admission grantLease(String tenant, long startNanos) {
+        if (inFlight.incrementAndGet() > currentConcurrencyLimit()) {
             inFlight.decrementAndGet();
-            refundToken(tenantId.value(), now);
+            refundToken(tenant, startNanos);
             return Admission.shed(Shedding.OVERLOADED, overloadRetryAfter);
         }
-        return Admission.granted(inFlight::decrementAndGet);
+        return Admission.granted(() -> {
+            observeCompletionNanos(nanos.getAsLong() - startNanos);
+            inFlight.decrementAndGet();
+        });
+    }
+
+    /** The concurrency ceiling in force right now: fixed here, adaptive in the subclass. */
+    protected long currentConcurrencyLimit() {
+        return maxConcurrency;
+    }
+
+    /** How long an admitted unit of work took. A no-op here; the adaptive subclass consumes it. */
+    protected void observeCompletionNanos(long elapsedNanos) {
+        // Intentionally empty: a fixed ceiling has nothing to learn from a duration.
     }
 
     /**

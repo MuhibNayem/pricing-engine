@@ -34,6 +34,7 @@
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
         <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
+        <cyclonedx-maven-plugin.version>2.9.1</cyclonedx-maven-plugin.version>
         <!--
           H2 is a TEST-ONLY dependency: production runs on PostgreSQL. Pinned rather than inherited
           from the Spring Boot BOM because 2.4.x breaks the JDBC test fixture - ResourceDatabasePopulator
@@ -191,6 +192,41 @@
                             </rules>
                             <fail>true</fail>
                         </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        <plugin>
+                <groupId>org.cyclonedx</groupId>
+                <artifactId>cyclonedx-maven-plugin</artifactId>
+                <version>${cyclonedx-maven-plugin.version}</version>
+                <configuration>
+                    <projectType>library</projectType>
+                    <schemaVersion>1.6</schemaVersion>
+                    <includeBomSerialNumber>true</includeBomSerialNumber>
+                    <includeCompileScope>true</includeCompileScope>
+                    <includeRuntimeScope>true</includeRuntimeScope>
+                    <includeProvidedScope>true</includeProvidedScope>
+                    <!--
+                        Test dependencies are excluded by default. They are not shipped, so listing
+                        them inflates the SBOM with a surface an adopter never has - and an SBOM
+                        that overstates the attack surface is worse than none, because it trains
+                        reviewers to skim.
+                    -->
+                    <includeTestScope>false</includeTestScope>
+                    <outputFormat>all</outputFormat>
+                    <outputName>bom</outputName>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <!--
+                                Aggregate across all six modules rather than per-module: the point
+                                of an SBOM is to answer "what did this release actually contain",
+                                and an adopter pulls the starter, which transitively pulls the rest.
+                            -->
+                            <goal>makeAggregateBom</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>

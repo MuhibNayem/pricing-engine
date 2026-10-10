@@ -23,6 +23,10 @@
             <groupId>com.saas.pricing</groupId>
             <artifactId>pricing-engine-core</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.saas.pricing</groupId>
+            <artifactId>pricing-engine-metering</artifactId>
+        </dependency>
 
         <!--
             Lettuce, not Jedis: one thread-safe multiplexed connection instead of a pool, and the

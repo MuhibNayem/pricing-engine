@@ -53,7 +53,7 @@ pricing-engine/
 | `pricing-engine-evaluator` | Dynamic formula evaluation with strict security sandboxing (blocking reflection, classloaders, and unauthorized methods). |
 | `pricing-engine-metering` | Meter event ingestion, idempotency deduplication, time windowing, out-of-order event invalidation, and `AsyncRatingTriggerService`. |
 | `pricing-engine-persistence` | Production PostgreSQL JDBC repositories with bi-temporal queries, JSONB object mappers, and Flyway migration scripts. |
-| `pricing-engine-redis` | **Optional.** Redis-backed `IdempotencyKeyStore` (Lettuce + Lua, atomic decide). PostgreSQL remains the system of record. No other module depends on this one. See [its README](pricing-engine-redis/README.md). |
+| `pricing-engine-redis` | **Optional.** Redis-backed `IdempotencyKeyStore` and `RatingClaimStore` (Lettuce + Lua; atomic decide and compare-and-set), plus a cluster-wide `AdmissionController` that shares the per-tenant quota across nodes while keeping the concurrency ceiling local. PostgreSQL remains the system of record. No other module depends on this one. See [its README](pricing-engine-redis/README.md). |
 | `pricing-engine-spring-boot-starter` | Spring Boot 4 auto-configuration, REST controllers (`/api/v1/pricing` & `/api/v1/pricing/meter`), Micrometer metrics, and Scoped Values context. |
 
 ---
@@ -311,13 +311,27 @@ The default build excludes the `load` and `soak` profiles; run them deliberately
 
 ### Test Results Summary:
 * `pricing-engine-parent`: SUCCESS
-* `pricing-engine-core`: 377 tests passed, 0 failures, 0 errors
+* `pricing-engine-core`: 382 tests passed, 0 failures, 0 errors
 * `pricing-engine-evaluator`: 50 tests passed, 0 failures, 0 errors
 * `pricing-engine-metering`: 84 tests passed, 0 failures, 0 errors
 * `pricing-engine-persistence`: 124 tests passed, 0 failures, 0 errors
-* `pricing-engine-redis`: 18 tests passed, 0 failures, 0 errors
+* `pricing-engine-redis`: 51 tests passed, 0 failures, 0 errors
 * `pricing-engine-spring-boot-starter`: 173 tests passed, 0 failures, 0 errors
-* **Total: 826 tests run, 0 failures, 0 errors, 0 skipped.**
+* **Total: 864 tests run, 0 failures, 0 errors, 0 skipped.**
+
+### Software Bill of Materials
+
+A CycloneDX SBOM is generated at `package` and attached to every artifact, as an aggregate across
+all six modules:
+
+```bash
+mvn clean package
+open target/bom.json          # aggregate; target/*/bom.json for a single module
+```
+
+Test-scoped dependencies are excluded by default: they are not shipped, and an SBOM that overstates
+the attack surface trains reviewers to skim. `pricing-engine-core` lists **zero** components — the
+"no runtime dependencies" claim in machine-readable form rather than a sentence in this file.
 
 ---
 

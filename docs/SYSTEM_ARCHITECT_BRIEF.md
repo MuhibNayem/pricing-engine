@@ -116,9 +116,10 @@ Stated before you find them.
 | No p99/p99.9 reporting or correctness SLI | Latency is measured in the test suites, but there is no production SLO surface. Metrics exist and carry bounded cardinality. | Open. Reporting layer is yours. |
 | No SLO alert definitions or on-call runbook | Nothing here pages you. | Open, and correctly so — an SLO is a property of your deployment, not of a library. |
 | Outbox delivery | The outbox guarantees a **committed event cannot be lost from the database**. Publishing it is your dispatcher's job. | By design — but hear it now rather than assume "transactional outbox" implies we run the loop. |
-| No SBOM | Supply-chain attestations are not generated. | Open. |
+| No SBOM | — | **Closed.** CycloneDX `makeAggregateBom` runs at `package` and attaches a BOM to every artifact. The aggregate lists 80 components; `pricing-engine-core` lists **zero**, which is the "no runtime dependencies" claim in machine-readable form. |
+| Outbox delivery | The outbox guarantees a **committed event cannot be lost from the database**. Publishing it is your dispatcher's job. | By design — but hear it now rather than assume "transactional outbox" implies we run the loop. |
 
-Three items previously listed here are now closed:
+Three further items previously listed here are now closed:
 
 - **The O(n) expiry sweep is fixed.** Both in-memory stores now evaluate expiry at read time and
   reclaim on a capped write-order sweep. Measured at the 100,000-entry cap: `claim()` went from
@@ -127,7 +128,9 @@ Three items previously listed here are now closed:
   and severs the connection mid-transaction, so we can show what a client experiences when the
   network breaks — not only what the server does when a backend dies.
 - **Rate limiting and load shedding are in place.** Per-tenant token bucket plus an in-flight
-  ceiling, mapped to 429 (your quota) and 503 (we are saturated), both with `Retry-After`.
+  ceiling, mapped to 429 (your quota) and 503 (we are saturated), both with `Retry-After`. The
+  ceiling is either fixed or latency-adaptive (`Gradient2`), and a **Redis-backed limiter shares
+  the quota across nodes** while keeping the ceiling local to each one.
 
 None of the three added a mandatory dependency.
 
